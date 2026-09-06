@@ -1,0 +1,548 @@
+/*
+Title   : rototranslate.ulp
+Purpose : Move and/or rotate the currently defined GROUP by an entered
+          displacement (dx, dy) and/or rotation angle, with a live
+          preview drawn on the board before the transform is applied.
+
+Version : 1.0
+
+Usage:
+  1. Select objects and issue the EAGLE GROUP command.
+  2. RUN rototranslate
+  3. Tick "Move" and/or "Rotate", enter values, choose rotation
+     reference point and mode (Move/Copy), press OK.
+  4. A preview rectangle is drawn on layer 51 (tDocu). Confirm to
+     apply the real transform, or cancel to discard it.
+
+Command line (non-interactive, applies Move only, no preview):
+  RUN rototranslate <dx> <dy>
+
+Known limitations (v1.0):
+  - Bounding box for elements uses the element origin plus a fixed
+    margin (courtyard/package outline is not walked), so the preview
+    rectangle for element groups is an approximation, not exact.
+  - Copy mode currently supports Move only. Combining Copy + Rotate
+    is not implemented: after COPY there is no reliable script-level
+    way to reselect just the new copy in order to rotate it. TODO.
+  - Locked elements are skipped when computing bounding box in copy
+    mode filtering, but are not excluded from the MOVE/COPY command
+    itself (EAGLE will refuse to move locked elements on its own).
+
+License note: this file is an independent implementation. It reuses
+EAGLE's own script command syntax (MOVE, ROTATE, GROUP, UNDO, RECT,
+LAYER), which is part of the EAGLE application interface and not the
+creative expression of any third party ULP author.
+*/
+
+#usage "en: <b>Move and/or rotate the current GROUP</b><p>"
+       "Define a group first, then run this ULP.<p>"
+       "RUN rototranslate dx dy - applies a move non-interactively.<p>"
+
+string VERSION = "1.0";
+
+// ---------------------------------------------------------------------
+// Config persistence (own namespace, does not touch any other ULP's keys)
+// ---------------------------------------------------------------------
+string cfgDx      = cfgget("rototranslate.value.dx", "0");
+string cfgDy      = cfgget("rototranslate.value.dy", "0");
+string cfgUnit    = cfgget("rototranslate.value.unit", "mm");
+string cfgAngle   = cfgget("rototranslate.value.angle", "0");
+int    cfgDoMove  = strtol(cfgget("rototranslate.value.domove", "1"));
+int    cfgDoRot   = strtol(cfgget("rototranslate.value.dorotate", "0"));
+int    cfgRefMode = strtol(cfgget("rototranslate.value.refmode", "0")); // 0=bbox center, 1=custom
+string cfgRefX    = cfgget("rototranslate.value.refx", "0");
+string cfgRefY    = cfgget("rototranslate.value.refy", "0");
+int    cfgMode    = strtol(cfgget("rototranslate.value.mode", "0"));    // 0=move-mode, 1=copy-mode
+int    cfgAngConv = strtol(cfgget("rototranslate.value.angleconv", "0")); // 0=CCW math, 1=CW clock
+
+// ---------------------------------------------------------------------
+// Bounding box of the current group (approximate for elements)
+// ---------------------------------------------------------------------
+real bbX1 =  1e9, bbY1 =  1e9;
+real bbX2 = -1e9, bbY2 = -1e9;
+int  groupIsEmpty = 1;
+
+void bbAdd(real x, real y) {
+   if (x < bbX1) bbX1 = x;
+   if (y < bbY1) bbY1 = y;
+   if (x > bbX2) bbX2 = x;
+   if (y > bbY2) bbY2 = y;
+   groupIsEmpty = 0;
+}
+
+// margin used ONLY as a fallback when an element has no pads/smds found
+// (should not normally happen)
+real ELEMENT_MARGIN = 2.0; // mm
+
+if (board) {
+   board(B) {
+      B.elements(E) {
+         if (ingroup(E)) {
+            int gotFootprint = 0;
+
+            // NOTE: when a package is accessed through an already-placed
+            // element (E.package.contacts(C)), EAGLE returns C.pad.x/y and
+            // C.smd.x/y already resolved to absolute board coordinates
+            // (position, rotation and mirror of the element already
+            // applied). No manual transform is needed or correct here.
+            E.package.contacts(C) {
+               if (C.pad) {
+                  real ox = u2mm(C.pad.x), oy = u2mm(C.pad.y);
+                  real r  = u2mm(C.pad.diameter[LAYER_BOTTOM]) / 2;
+                  bbAdd(ox - r, oy - r);
+                  bbAdd(ox + r, oy + r);
+                  gotFootprint = 1;
+               }
+               if (C.smd) {
+                  real ox = u2mm(C.smd.x), oy = u2mm(C.smd.y);
+                  real hx = u2mm(C.smd.dx) / 2, hy = u2mm(C.smd.dy) / 2;
+                  bbAdd(ox - hx, oy - hy);
+                  bbAdd(ox + hx, oy + hy);
+                  gotFootprint = 1;
+               }
+            }
+
+            if (!gotFootprint) {
+               // fallback for an element with neither pads nor smds
+               real ex = u2mm(E.x), ey = u2mm(E.y);
+               bbAdd(ex - ELEMENT_MARGIN, ey - ELEMENT_MARGIN);
+               bbAdd(ex + ELEMENT_MARGIN, ey + ELEMENT_MARGIN);
+            }
+         }
+      }
+      B.wires(W) {
+         if (ingroup(W)) {
+            bbAdd(u2mm(W.x1), u2mm(W.y1));
+            bbAdd(u2mm(W.x2), u2mm(W.y2));
+         }
+      }
+      B.circles(C) {
+         if (ingroup(C)) {
+            bbAdd(u2mm(C.x) - u2mm(C.radius), u2mm(C.y) - u2mm(C.radius));
+            bbAdd(u2mm(C.x) + u2mm(C.radius), u2mm(C.y) + u2mm(C.radius));
+         }
+      }
+      B.rectangles(R) {
+         if (ingroup(R)) {
+            bbAdd(u2mm(R.x1), u2mm(R.y1));
+            bbAdd(u2mm(R.x2), u2mm(R.y2));
+         }
+      }
+      B.polygons(P) {
+         if (ingroup(P)) {
+            P.wires(W) {
+               bbAdd(u2mm(W.x1), u2mm(W.y1));
+               bbAdd(u2mm(W.x2), u2mm(W.y2));
+            }
+         }
+      }
+      B.texts(T) {
+         if (ingroup(T)) {
+            bbAdd(u2mm(T.x), u2mm(T.y));
+         }
+      }
+      B.holes(H) {
+         if (ingroup(H)) {
+            bbAdd(u2mm(H.x) - u2mm(H.drill)/2, u2mm(H.y) - u2mm(H.drill)/2);
+            bbAdd(u2mm(H.x) + u2mm(H.drill)/2, u2mm(H.y) + u2mm(H.drill)/2);
+         }
+      }
+   }
+}
+
+real bbCenterX = groupIsEmpty ? 0 : (bbX1 + bbX2) / 2;
+real bbCenterY = groupIsEmpty ? 0 : (bbY1 + bbY2) / 2;
+
+// Collect all board element names, alphabetically sorted, for the
+// "snap to midpoint" combo boxes.
+string elemNames[];
+int elemCount = 0;
+if (board) {
+   board(B) {
+      B.elements(E) {
+         elemNames[elemCount] = E.name;
+         elemCount++;
+      }
+   }
+}
+// simple insertion sort - fine for typical board element counts
+for (int i = 1; i < elemCount; i++) {
+   string key = elemNames[i];
+   int j = i - 1;
+   while (j >= 0 && elemNames[j] > key) {
+      elemNames[j+1] = elemNames[j];
+      j--;
+   }
+   elemNames[j+1] = key;
+}
+elemNames[elemCount] = ""; // combo box list terminator (must be empty)
+
+// Extract a "type prefix" from each name by stripping trailing digits
+// (e.g. "IC12" -> "IC", "RN3" -> "RN"), for the optional type filter
+// shown when there are many components.
+string typePrefixes[];
+int typeCount = 0;
+for (int ti = 0; ti < elemCount; ti++) {
+   string nm = elemNames[ti];
+   int plen = strlen(nm);
+   while (plen > 0 && nm[plen-1] >= '0' && nm[plen-1] <= '9') plen--;
+   string prefix = strsub(nm, 0, plen);
+   int already = 0;
+   for (int tk = 0; tk < typeCount; tk++) {
+      if (typePrefixes[tk] == prefix) { already = 1; break; }
+   }
+   if (!already) { typePrefixes[typeCount] = prefix; typeCount++; }
+}
+for (int ta = 1; ta < typeCount; ta++) {
+   string tkey = typePrefixes[ta];
+   int tj = ta - 1;
+   while (tj >= 0 && typePrefixes[tj] > tkey) {
+      typePrefixes[tj+1] = typePrefixes[tj];
+      tj--;
+   }
+   typePrefixes[tj+1] = tkey;
+}
+string typeNames[];
+typeNames[0] = "All types";
+for (int tc = 0; tc < typeCount; tc++) typeNames[tc+1] = typePrefixes[tc];
+typeNames[typeCount+1] = "";
+
+int MANY_ELEMENTS_THRESHOLD = 25;
+int manyElements = elemCount > MANY_ELEMENTS_THRESHOLD;
+
+// Current editor unit, used only to LABEL the input fields. The raw
+// strings typed by the user are still forwarded as-is to MOVE/ROTATE/
+// COPY, exactly like the original ULP: EAGLE itself interprets a bare
+// number according to this same unit (or an explicit suffix like
+// "0.1in" typed by the user overrides it).
+string gridUnitName = "mm";
+if (board) {
+   board(B) {
+      if (B.grid.unit == GRID_UNIT_MIL)   gridUnitName = "mil";
+      else if (B.grid.unit == GRID_UNIT_INCH) gridUnitName = "inch";
+      else if (B.grid.unit == GRID_UNIT_MIC)  gridUnitName = "micron";
+      else                                     gridUnitName = "mm";
+   }
+}
+
+// ---------------------------------------------------------------------
+// Non-interactive command line mode: RUN rototranslate dx dy
+// ---------------------------------------------------------------------
+if (argc == 3) {
+   string cmd = "";
+   sprintf(cmd, "MOVE (>0 0) (%s %s);\n", argv[1], argv[2]);
+   exit(cmd);
+}
+
+// ---------------------------------------------------------------------
+// Second-stage confirmation run: internal use, chained via RUN from the
+// script emitted after the main dialog. Not meant to be typed by hand.
+// argv: 1=--confirm 2=dx 3=dy 4=angle 5=refx 6=refy 7=domove 8=dorotate
+// ---------------------------------------------------------------------
+if (argc == 9 && argv[1] == "--confirm") {
+   string dx     = argv[2];
+   string dy     = argv[3];
+   string angle  = argv[4];
+   string refx   = argv[5];
+   string refy   = argv[6];
+   int    doMove = strtol(argv[7]);
+   int    doRot  = strtol(argv[8]);
+
+   int res = dlgDialog("rototranslate - Confirm") {
+      dlgHBoxLayout {
+         dlgLabel("Apply this transform? (preview shown on layer 51)");
+      }
+      dlgHBoxLayout {
+         dlgPushButton("+Apply") dlgAccept();
+         dlgPushButton("-Discard") dlgReject();
+      }
+   };
+
+   string cmd = "UNDO;\n"; // always remove the preview rectangle first
+   if (res) {
+      if (doMove) {
+         string amt;
+         sprintf(amt, "MOVE (>0 0) (%s %s);\n", dx, dy);
+         cmd += amt;
+      }
+      if (doRot) {
+         string amt;
+         sprintf(amt, "ROTATE R%s (>%s %s);\n", angle, refx, refy);
+         cmd += amt;
+      }
+   }
+   exit(cmd);
+}
+
+// ---------------------------------------------------------------------
+// Main interactive dialog
+// ---------------------------------------------------------------------
+string xVal    = cfgDx;
+string yVal    = cfgDy;
+string angVal  = cfgAngle;
+string refXVal = cfgRefX;
+string refYVal = cfgRefY;
+int doMove     = cfgDoMove;
+int doRot      = cfgDoRot;
+int refMode    = cfgRefMode;
+int mode       = cfgMode;
+int selA = 0;
+int selB = 0;
+int selTypeA = 0;
+int selTypeB = 0;
+int enableMidpoint = 0;
+string filteredA[];
+string filteredB[];
+for (int fi = 0; fi < elemCount; fi++) {
+   filteredA[fi] = elemNames[fi];
+   filteredB[fi] = elemNames[fi];
+}
+filteredA[elemCount] = "";
+filteredB[elemCount] = "";
+string midpointMsg = "";
+
+void computeMidpoint(void) {
+   midpointMsg = "";
+   if (!enableMidpoint) {
+      midpointMsg = "Tick 'Enable' above to use this.";
+      return;
+   }
+   if (groupIsEmpty) {
+      midpointMsg = "No group defined - cannot compute an offset for it.";
+      return;
+   }
+   string nameA = filteredA[selA];
+   string nameB = filteredB[selB];
+   if (nameA == "" || nameB == "") {
+      midpointMsg = "Choose both Ref A and Ref B.";
+      return;
+   }
+   int foundA = 0, foundB = 0;
+   real axA, ayA, axB, ayB;
+   if (board) {
+      board(B) {
+         B.elements(E) {
+            if (E.name == nameA) { axA = u2mm(E.x); ayA = u2mm(E.y); foundA = 1; }
+            if (E.name == nameB) { axB = u2mm(E.x); ayB = u2mm(E.y); foundB = 1; }
+         }
+      }
+   }
+   if (!foundA || !foundB) {
+      midpointMsg = "Could not find one or both components on the board.";
+      return;
+   }
+   real midX = (axA + axB) / 2;
+   real midY = (ayA + ayB) / 2;
+   sprintf(xVal, "%.4fmm", midX - bbCenterX);
+   sprintf(yVal, "%.4fmm", midY - bbCenterY);
+   doMove = 1;
+   midpointMsg = "dX/dY set. Group will move so its bbox center lands "
+                 "on the midpoint.";
+}
+int angConv    = cfgAngConv;
+
+string bbInfo = "";
+if (groupIsEmpty) {
+   bbInfo = "No group defined (or empty). Run GROUP first.";
+} else {
+   sprintf(bbInfo, "Group bbox center: %.3f, %.3f mm (approx.)", bbCenterX, bbCenterY);
+}
+
+int Result = dlgDialog("rototranslate v" + VERSION) {
+   dlgHBoxLayout { dlgLabel(bbInfo); }
+
+   dlgGroup("Transform") {
+      dlgHBoxLayout {
+         dlgCheckBox("&Move", doMove);
+         dlgLabel("dX (" + gridUnitName + "):");
+         dlgStringEdit(xVal);
+         dlgLabel("dY (" + gridUnitName + "):");
+         dlgStringEdit(yVal);
+      }
+      dlgHBoxLayout {
+         dlgCheckBox("&Rotate", doRot);
+         dlgLabel("Angle (deg):");
+         dlgStringEdit(angVal);
+      }
+      dlgHBoxLayout {
+         dlgLabel("Positive angle means:");
+         dlgRadioButton("Counter-clockwise  ↺  (math/EAGLE default)", angConv);
+         dlgRadioButton("Clockwise  ↻  (clock convention)", angConv);
+      }
+   }
+
+   dlgGroup("Snap dX/dY to midpoint between two components (optional)") {
+      dlgHBoxLayout {
+         dlgCheckBox("&Enable", enableMidpoint) { computeMidpoint(); }
+      }
+      if (manyElements) {
+         dlgHBoxLayout {
+            dlgLabel("Filter A by type:");
+            dlgComboBox(typeNames, selTypeA) {
+               string wantA = typeNames[selTypeA];
+               int idxA = 0;
+               for (int fa = 0; fa < elemCount; fa++) {
+                  string nmA = elemNames[fa];
+                  int plenA = strlen(nmA);
+                  while (plenA > 0 && nmA[plenA-1] >= '0' && nmA[plenA-1] <= '9') plenA--;
+                  string prefA = strsub(nmA, 0, plenA);
+                  if (wantA == "All types" || prefA == wantA) {
+                     filteredA[idxA] = nmA;
+                     idxA++;
+                  }
+               }
+               filteredA[idxA] = "";
+               selA = 0;
+               computeMidpoint();
+            }
+            dlgLabel("Filter B by type:");
+            dlgComboBox(typeNames, selTypeB) {
+               string wantB = typeNames[selTypeB];
+               int idxB = 0;
+               for (int fb = 0; fb < elemCount; fb++) {
+                  string nmB = elemNames[fb];
+                  int plenB = strlen(nmB);
+                  while (plenB > 0 && nmB[plenB-1] >= '0' && nmB[plenB-1] <= '9') plenB--;
+                  string prefB = strsub(nmB, 0, plenB);
+                  if (wantB == "All types" || prefB == wantB) {
+                     filteredB[idxB] = nmB;
+                     idxB++;
+                  }
+               }
+               filteredB[idxB] = "";
+               selB = 0;
+               computeMidpoint();
+            }
+         }
+      }
+      dlgHBoxLayout {
+         dlgLabel("Ref A:");
+         dlgComboBox(filteredA, selA) { computeMidpoint(); }
+         dlgLabel("Ref B:");
+         dlgComboBox(filteredB, selB) { computeMidpoint(); }
+      }
+      dlgHBoxLayout {
+         dlgLabel(midpointMsg);
+      }
+   }
+
+   dlgGroup("Rotation reference point") {
+      dlgHBoxLayout {
+         dlgRadioButton("Group bounding-box &center", refMode);
+      }
+      dlgHBoxLayout {
+         dlgRadioButton("Custom point (enter &below)", refMode);
+         dlgLabel("X (" + gridUnitName + "):");
+         dlgStringEdit(refXVal);
+         dlgLabel("Y (" + gridUnitName + "):");
+         dlgStringEdit(refYVal);
+      }
+   }
+
+   dlgGroup("Output mode") {
+      dlgHBoxLayout {
+         dlgRadioButton("&Move group", mode);
+         dlgRadioButton("&Copy group (move only, see notes)", mode);
+      }
+   }
+
+   dlgHBoxLayout {
+      dlgPushButton("+Preview && Apply") dlgAccept();
+      dlgPushButton("-Cancel") dlgReject();
+   }
+};
+
+if (Result == 0) exit(0);
+
+if (!doMove && !doRot) {
+   dlgMessageBox("Select at least Move or Rotate.");
+   exit(0);
+}
+
+if (groupIsEmpty && refMode == 0) {
+   dlgMessageBox("No group found to compute a bounding-box center. "
+                 "Define a group first, or choose a custom reference point.");
+   exit(0);
+}
+
+// Persist settings
+cfgset("rototranslate.value.dx", xVal);
+cfgset("rototranslate.value.dy", yVal);
+cfgset("rototranslate.value.angle", angVal);
+cfgset("rototranslate.value.refx", refXVal);
+cfgset("rototranslate.value.refy", refYVal);
+
+string tmp;
+sprintf(tmp, "%d", doMove);  cfgset("rototranslate.value.domove", tmp);
+sprintf(tmp, "%d", doRot);   cfgset("rototranslate.value.dorotate", tmp);
+sprintf(tmp, "%d", refMode); cfgset("rototranslate.value.refmode", tmp);
+sprintf(tmp, "%d", mode);    cfgset("rototranslate.value.mode", tmp);
+sprintf(tmp, "%d", angConv); cfgset("rototranslate.value.angleconv", tmp);
+
+// Resolve the actual reference point string sent to EAGLE. The
+// bbox-center case is always computed by us in mm, so it MUST carry an
+// explicit "mm" suffix regardless of the editor's current default unit.
+// The custom-point case is raw user input and is forwarded as typed
+// (same philosophy as the dX/dY fields): EAGLE interprets a bare number
+// per the current default unit, or per an explicit suffix the user
+// typed themselves (e.g. "500mil").
+string refXStr, refYStr;
+if (refMode == 0) {
+   sprintf(refXStr, "%.4fmm", bbCenterX);
+   sprintf(refYStr, "%.4fmm", bbCenterY);
+} else {
+   refXStr = refXVal;
+   refYStr = refYVal;
+}
+
+// Preview rectangle: current bbox translated by dx,dy (rotation not
+// reflected in the v1.0 preview shape, only its position)
+real dx = strtod(xVal);
+real dy = strtod(yVal);
+real px1 = bbX1, py1 = bbY1, px2 = bbX2, py2 = bbY2;
+if (doMove) {
+   px1 += dx; px2 += dx;
+   py1 += dy; py2 += dy;
+}
+
+// Resolve the effective angle sent to EAGLE's ROTATE (which always uses
+// the CCW-positive convention). If the user picked "Clockwise" as their
+// positive direction, invert the sign here so their intent is honored.
+real angleEntered = strtod(angVal);
+real angleEffective = (angConv == 1) ? -angleEntered : angleEntered;
+string angValEffective;
+sprintf(angValEffective, "%.4f", angleEffective);
+
+string script = "";
+string line;
+
+sprintf(line, "LAYER 51;\nDISPLAY 51;\nRECT (%.4fmm %.4fmm) (%.4fmm %.4fmm);\n", px1, py1, px2, py2);
+script += line;
+
+string chain;
+sprintf(chain, "RUN rototranslate.ulp --confirm %s %s %s %s %s %d %d;\n",
+        xVal, yVal, angValEffective, refXStr, refYStr, doMove, doRot);
+script += chain;
+
+if (mode == 1) {
+   // Copy mode + Rotate is blocked for schematic-linked elements (parts):
+   // CUT on a part triggers EAGLE's own backannotation protection
+   // ("cannot backannotate, do it in the schematic") because deleting
+   // a part from the board without a matching schematic change would
+   // desync the two. This is EAGLE refusing the operation by design,
+   // not a scripting workaround away. COPY (below) is the
+   // backannotation-safe way to duplicate a part, but it only supports
+   // a plain translation, not a combined rotation.
+   if (doRot) {
+      dlgMessageBox("Copy + Rotate is not possible for schematic-linked "
+                     "parts: EAGLE blocks CUT on them to protect "
+                     "board/schematic sync (backannotation). "
+                     "Use Move mode for rotation, or Copy for move-only.");
+      exit(0);
+   }
+   string amt;
+   sprintf(amt, "COPY (>0 0) (%s %s);\n", xVal, yVal);
+   exit(amt);
+}
+
+exit(script);

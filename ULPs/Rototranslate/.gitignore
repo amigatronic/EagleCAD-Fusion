@@ -1,0 +1,22 @@
+# EAGLE backup / lock / autosave files
+*.b#*
+*.s#*
+*.l#*
+*.lbr.bak
+*.brd.bak
+*.sch.bak
+*.dri
+*.gpi
+eagle.epf
+
+# EAGLE ULP compiled cache (rare, but just in case)
+*.o
+
+# OS junk
+Thumbs.db
+.DS_Store
+desktop.ini
+
+# Editor junk
+*.swp
+*~
