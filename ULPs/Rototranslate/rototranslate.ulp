@@ -28,6 +28,21 @@ Known limitations (v1.0):
     mode filtering, but are not excluded from the MOVE/COPY command
     itself (EAGLE will refuse to move locked elements on its own).
 
+TODO (parked, not yet implemented):
+  - "--capture-ref" (GROUP N reference points, run once, then GROUP the
+    object to move and use "Use captured point") works but was judged
+    too clunky/multi-step in practice. Needs a friendlier, more direct
+    UI - revisit once there's a clearer idea for the workflow.
+  - Related but DIFFERENT problem worth keeping separate: "place a hole
+    exactly at the center of a circle defined by N existing holes on
+    that circle". The current --capture-ref centroid (simple average of
+    the N points) only equals the true circle center when the points
+    are evenly/symmetrically spaced around it. For an arbitrary/uneven
+    spacing, the correct math is a circle fit (e.g. circumcenter from 3
+    points, or a least-squares fit for more), not a plain average - a
+    different algorithm from what's implemented today, and should not
+    be assumed to be the same feature.
+
 License note: this file is an independent implementation. It reuses
 EAGLE's own script command syntax (MOVE, ROTATE, GROUP, UNDO, RECT,
 LAYER), which is part of the EAGLE application interface and not the
@@ -54,6 +69,12 @@ string cfgRefX    = cfgget("rototranslate.value.refx", "0");
 string cfgRefY    = cfgget("rototranslate.value.refy", "0");
 int    cfgMode    = strtol(cfgget("rototranslate.value.mode", "0"));    // 0=move-mode, 1=copy-mode
 int    cfgAngConv = strtol(cfgget("rototranslate.value.angleconv", "0")); // 0=CCW math, 1=CW clock
+string cfgRefAName = cfgget("rototranslate.value.refaname", "");
+string cfgRefBName = cfgget("rototranslate.value.refbname", "");
+int    cfgEnableMidpoint = strtol(cfgget("rototranslate.value.enablemidpoint", "0"));
+string cfgCapturedRefX = cfgget("rototranslate.value.capturedrefx", "");
+string cfgCapturedRefY = cfgget("rototranslate.value.capturedrefy", "");
+string cfgCapturedRefN = cfgget("rototranslate.value.capturedrefn", "0");
 
 // ---------------------------------------------------------------------
 // Bounding box of the current group (approximate for elements)
@@ -74,27 +95,43 @@ void bbAdd(real x, real y) {
 // (should not normally happen)
 real ELEMENT_MARGIN = 2.0; // mm
 
+// Track how many elements (and other loose board objects) are in the
+// group, and the origin of the single element if there's exactly one -
+// used below to align exactly with single-element reference points
+// (see groupSingleElementX/Y).
+int groupElementCount = 0;
+int groupOtherObjectCount = 0;
+real groupSingleElementX = 0, groupSingleElementY = 0;
+
 if (board) {
    board(B) {
       B.elements(E) {
          if (ingroup(E)) {
+            groupElementCount++;
+            groupSingleElementX = u2mm(E.x);
+            groupSingleElementY = u2mm(E.y);
             int gotFootprint = 0;
 
-            // NOTE: when a package is accessed through an already-placed
-            // element (E.package.contacts(C)), EAGLE returns C.pad.x/y and
-            // C.smd.x/y already resolved to absolute board coordinates
-            // (position, rotation and mirror of the element already
-            // applied). No manual transform is needed or correct here.
+            // NOTE: per the official EAGLE User Language manual
+            // (UL_CONTACT / UL_CONTACTREF notes): "the coordinates (x, y)
+            // of the contact depend on the context in which it is
+            // called: if derived from a UL_LIBRARY context, same as the
+            // package drawing; in all other cases, the actual values
+            // from the board." Since we reach contacts() through an
+            // already-placed element, C.x/C.y are absolute board
+            // coordinates already - no manual transform needed or
+            // correct here. UL_CONTACT exposes x/y directly (unified for
+            // both pad and smd contacts); size still needs to come from
+            // .pad or .smd specifically.
             E.package.contacts(C) {
+               real ox = u2mm(C.x), oy = u2mm(C.y);
                if (C.pad) {
-                  real ox = u2mm(C.pad.x), oy = u2mm(C.pad.y);
-                  real r  = u2mm(C.pad.diameter[LAYER_BOTTOM]) / 2;
+                  real r = u2mm(C.pad.diameter[LAYER_BOTTOM]) / 2;
                   bbAdd(ox - r, oy - r);
                   bbAdd(ox + r, oy + r);
                   gotFootprint = 1;
                }
                if (C.smd) {
-                  real ox = u2mm(C.smd.x), oy = u2mm(C.smd.y);
                   real hx = u2mm(C.smd.dx) / 2, hy = u2mm(C.smd.dy) / 2;
                   bbAdd(ox - hx, oy - hy);
                   bbAdd(ox + hx, oy + hy);
@@ -112,24 +149,28 @@ if (board) {
       }
       B.wires(W) {
          if (ingroup(W)) {
+            groupOtherObjectCount++;
             bbAdd(u2mm(W.x1), u2mm(W.y1));
             bbAdd(u2mm(W.x2), u2mm(W.y2));
          }
       }
       B.circles(C) {
          if (ingroup(C)) {
+            groupOtherObjectCount++;
             bbAdd(u2mm(C.x) - u2mm(C.radius), u2mm(C.y) - u2mm(C.radius));
             bbAdd(u2mm(C.x) + u2mm(C.radius), u2mm(C.y) + u2mm(C.radius));
          }
       }
       B.rectangles(R) {
          if (ingroup(R)) {
+            groupOtherObjectCount++;
             bbAdd(u2mm(R.x1), u2mm(R.y1));
             bbAdd(u2mm(R.x2), u2mm(R.y2));
          }
       }
       B.polygons(P) {
          if (ingroup(P)) {
+            groupOtherObjectCount++;
             P.wires(W) {
                bbAdd(u2mm(W.x1), u2mm(W.y1));
                bbAdd(u2mm(W.x2), u2mm(W.y2));
@@ -138,11 +179,13 @@ if (board) {
       }
       B.texts(T) {
          if (ingroup(T)) {
+            groupOtherObjectCount++;
             bbAdd(u2mm(T.x), u2mm(T.y));
          }
       }
       B.holes(H) {
          if (ingroup(H)) {
+            groupOtherObjectCount++;
             bbAdd(u2mm(H.x) - u2mm(H.drill)/2, u2mm(H.y) - u2mm(H.drill)/2);
             bbAdd(u2mm(H.x) + u2mm(H.drill)/2, u2mm(H.y) + u2mm(H.drill)/2);
          }
@@ -150,8 +193,24 @@ if (board) {
    }
 }
 
-real bbCenterX = groupIsEmpty ? 0 : (bbX1 + bbX2) / 2;
-real bbCenterY = groupIsEmpty ? 0 : (bbY1 + bbY2) / 2;
+// When the group is exactly ONE placed element (and nothing else),
+// use that element's own origin as the reference point instead of the
+// pads/smds bounding-box center. This matches how the "snap to
+// midpoint" feature reads the position of the two REFERENCE
+// components (their origin, E.x/E.y) - using a different reference
+// point (bbox center) for the part being MOVED would introduce a
+// mismatch and break exact axis alignment, which is the whole point
+// of aligning something precisely between two existing parts.
+int useOriginAsCenter = (groupElementCount == 1 && groupOtherObjectCount == 0);
+
+real bbCenterX, bbCenterY;
+if (useOriginAsCenter) {
+   bbCenterX = groupSingleElementX;
+   bbCenterY = groupSingleElementY;
+} else {
+   bbCenterX = groupIsEmpty ? 0 : (bbX1 + bbX2) / 2;
+   bbCenterY = groupIsEmpty ? 0 : (bbY1 + bbY2) / 2;
+}
 
 // Collect all board element names, alphabetically sorted, for the
 // "snap to midpoint" combo boxes.
@@ -235,6 +294,65 @@ if (argc == 3) {
 }
 
 // ---------------------------------------------------------------------
+// RUN rototranslate --capture-ref
+//
+// Reads the CURRENTLY ACTIVE GROUP (whatever it contains: elements,
+// holes, vias, circles, texts...) and stores the centroid (average of
+// all found points) in config, for later use as a Move target in the
+// main dialog ("Use captured reference point"). This lets you average
+// ANY NUMBER of arbitrary board objects, not just two named parts -
+// e.g. GROUP four corner holes, run this, then GROUP the hole you
+// actually want to move and run the main dialog.
+// ---------------------------------------------------------------------
+if (argc == 2 && argv[1] == "--capture-ref") {
+   real sx = 0, sy = 0;
+   int n = 0;
+   if (board) {
+      board(B) {
+         B.elements(E) {
+            if (ingroup(E)) { sx += u2mm(E.x); sy += u2mm(E.y); n++; }
+         }
+         B.holes(H) {
+            if (ingroup(H)) { sx += u2mm(H.x); sy += u2mm(H.y); n++; }
+         }
+         B.circles(C) {
+            if (ingroup(C)) { sx += u2mm(C.x); sy += u2mm(C.y); n++; }
+         }
+         B.texts(T) {
+            if (ingroup(T)) { sx += u2mm(T.x); sy += u2mm(T.y); n++; }
+         }
+         // vias are a loop member of UL_SIGNAL, not UL_BOARD directly
+         B.signals(S) {
+            S.vias(V) {
+               if (ingroup(V)) { sx += u2mm(V.x); sy += u2mm(V.y); n++; }
+            }
+         }
+      }
+   }
+   if (n == 0) {
+      dlgMessageBox("No reference points found in the current group. "
+                    "GROUP the objects to average first.");
+      exit(0);
+   }
+   real cx = sx / n, cy = sy / n;
+   string sxv, syv, snv;
+   sprintf(sxv, "%.6f", cx);
+   sprintf(syv, "%.6f", cy);
+   sprintf(snv, "%d", n);
+   cfgset("rototranslate.value.capturedrefx", sxv);
+   cfgset("rototranslate.value.capturedrefy", syv);
+   cfgset("rototranslate.value.capturedrefn", snv);
+   string msg;
+   sprintf(msg, "Captured centroid of %d reference point(s):\n"
+                "%.4f, %.4f mm\n\n"
+                "Now GROUP the object you want to move, and run "
+                "rototranslate normally - the captured point will be "
+                "available under 'Snap dX/dY'.", n, cx, cy);
+   dlgMessageBox(msg);
+   exit(0);
+}
+
+// ---------------------------------------------------------------------
 // Second-stage confirmation run: internal use, chained via RUN from the
 // script emitted after the main dialog. Not meant to be typed by hand.
 // argv: 1=--confirm 2=dx 3=dy 4=angle 5=refx 6=refy 7=domove 8=dorotate
@@ -290,7 +408,7 @@ int selA = 0;
 int selB = 0;
 int selTypeA = 0;
 int selTypeB = 0;
-int enableMidpoint = 0;
+int enableMidpoint = cfgEnableMidpoint;
 string filteredA[];
 string filteredB[];
 for (int fi = 0; fi < elemCount; fi++) {
@@ -299,6 +417,12 @@ for (int fi = 0; fi < elemCount; fi++) {
 }
 filteredA[elemCount] = "";
 filteredB[elemCount] = "";
+// Restore last used Ref A / Ref B by NAME (not by index, since the
+// element order/count can differ from the previous run).
+for (int ra = 0; ra < elemCount; ra++) {
+   if (filteredA[ra] == cfgRefAName) selA = ra;
+   if (filteredB[ra] == cfgRefBName) selB = ra;
+}
 string midpointMsg = "";
 
 void computeMidpoint(void) {
@@ -344,6 +468,8 @@ int angConv    = cfgAngConv;
 string bbInfo = "";
 if (groupIsEmpty) {
    bbInfo = "No group defined (or empty). Run GROUP first.";
+} else if (useOriginAsCenter) {
+   sprintf(bbInfo, "Single element - using its exact origin: %.4f, %.4f mm", bbCenterX, bbCenterY);
 } else {
    sprintf(bbInfo, "Group bbox center: %.3f, %.3f mm (approx.)", bbCenterX, bbCenterY);
 }
@@ -422,7 +548,7 @@ int Result = dlgDialog("rototranslate v" + VERSION) {
          dlgComboBox(filteredB, selB) { computeMidpoint(); }
       }
       dlgHBoxLayout {
-         dlgLabel(midpointMsg);
+         dlgLabel(midpointMsg, 1);
       }
    }
 
@@ -477,6 +603,9 @@ sprintf(tmp, "%d", doMove);  cfgset("rototranslate.value.domove", tmp);
 sprintf(tmp, "%d", doRot);   cfgset("rototranslate.value.dorotate", tmp);
 sprintf(tmp, "%d", refMode); cfgset("rototranslate.value.refmode", tmp);
 sprintf(tmp, "%d", mode);    cfgset("rototranslate.value.mode", tmp);
+cfgset("rototranslate.value.refaname", filteredA[selA]);
+cfgset("rototranslate.value.refbname", filteredB[selB]);
+sprintf(tmp, "%d", enableMidpoint); cfgset("rototranslate.value.enablemidpoint", tmp);
 sprintf(tmp, "%d", angConv); cfgset("rototranslate.value.angleconv", tmp);
 
 // Resolve the actual reference point string sent to EAGLE. The
