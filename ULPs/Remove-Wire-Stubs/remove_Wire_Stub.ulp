@@ -176,8 +176,8 @@ void main() {
     for (i = 0; i < wire_count; i++) {
         if (is_stub[i]) {
             string temp;
-            real mid_x = u2mm((real(wx1[i]) + wx2[i]) / 2.0);
-            real mid_y = u2mm((real(wy1[i]) + wy2[i]) / 2.0);
+            real mid_x = (u2mm(wx1[i]) + u2mm(wx2[i])) / 2.0;
+            real mid_y = (u2mm(wy1[i]) + u2mm(wy2[i])) / 2.0;
             // Limit precision to RIPUP_PRECISION decimals for cleaner commands
             // Use format with fixed decimals (e.g. %.3f)
             if (RIPUP_PRECISION == 0)
