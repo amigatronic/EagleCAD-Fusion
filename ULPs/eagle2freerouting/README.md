@@ -1,12 +1,21 @@
 # Eagle2FreeRouter
 
-**EAGLE CAD ULP for exporting EAGLE board files to Specctra DSN format for use with FreeRouting.**
+**ULP scripts for exporting EAGLE and Fusion 360 Electronics board files to Specctra DSN format for use with FreeRouting.**
 
-Eagle2FreeRouter converts an EAGLE CAD board into a DSN file that can be imported into FreeRouting for automatic PCB routing.
+Eagle2FreeRouter converts a board into a DSN file that can be imported into FreeRouting for automatic PCB routing.
+
+## Available versions
+
+| File | Target |
+|---|---|
+| `eagle2freerouter.ulp` | EAGLE CAD |
+| `fusion2freerouting.ulp` | **Fusion 360 Electronics** (optimized for Fusion 360) |
+
+Both versions share the same features, export options and DSN output. Use `fusion2freerouting.ulp` when working in Fusion 360 Electronics and `eagle2freerouter.ulp` when working in EAGLE CAD.
 
 ## Features
 
-- Export EAGLE boards to Specctra DSN format.
+- Export EAGLE / Fusion 360 Electronics boards to Specctra DSN format.
 - Export of:
   - Board outline
   - Components and footprints
@@ -24,10 +33,32 @@ Eagle2FreeRouter converts an EAGLE CAD board into a DSN file that can be importe
 - Automatic recognition of circular polygons.
 - Adaptive reduction of excessively detailed circular polygons.
 - Circular polygons remain **filled polygons** in the DSN and are not converted to empty circles.
+- Built-in **Help** window with clickable links and credits.
+
+## Fusion 360 Electronics version
+
+`fusion2freerouting.ulp` is the version optimized for **Fusion 360 Electronics**.
+
+Fusion 360 Electronics replaced the classic EAGLE `polygons` loop (now reported as deprecated) with new polygon objects. The Fusion version uses them natively:
+
+| Purpose | EAGLE version | Fusion 360 version |
+|---|---|---|
+| Copper pours inside signals | `polygons` loop | `polyPours` loop (`UL_POLYPOUR`) |
+| Restrict areas on the board | `polygons` loop | `polyShapes` loop (`UL_POLYSHAPE`) |
+| Restrict areas inside packages | `polygons` loop | `polyShapes` loop (`UL_POLYSHAPE`) |
+
+Notes:
+
+- A `UL_POLYPOUR` exposes its contour directly; there is no intermediate `polyShapes` level for copper pours.
+- `UL_POLYSHAPE` has no `width` member, so restrict areas on the board are written to the DSN with a width of `0`.
+- All other features (Unroute all, net exclusion, circular polygon optimization, DSN output selector) behave the same as in the EAGLE version.
+- The Help button opens links in the default web browser (Windows).
+
+The Fusion version identifies itself with the suffix `-fusion` in its version string (for example `7.1.5-fusion`).
 
 ## Unroute all
 
-The **Unroute all existing wires and vias** option allows an already routed EAGLE board to be exported as if it were unrouted.
+The **Unroute all existing wires and vias** option allows an already routed board to be exported as if it were unrouted.
 
 When enabled, existing routing information is omitted from the DSN export so that FreeRouting can route the board again from the original netlist.
 
@@ -42,7 +73,7 @@ When the option is disabled, the original export behavior is preserved.
 
 ## Circular polygon optimization
 
-Some EAGLE boards can contain circular copper polygons represented internally as polygons with a very large number of vertices.
+Some boards can contain circular copper polygons represented internally as polygons with a very large number of vertices.
 
 For example, a circular copper area may be represented by a polygon containing **3600 vertices**.
 
@@ -76,9 +107,9 @@ The exporter therefore avoids increasing the number of vertices unnecessarily.
 
 ### Filled polygon preservation
 
-A circular EAGLE polygon is **not** converted into a DSN `circle`.
+A circular polygon is **not** converted into a DSN `circle`.
 
-An EAGLE polygon represents a **filled copper area**, so the DSN output remains a filled polygon:
+A polygon represents a **filled copper area**, so the DSN output remains a filled polygon:
 
 ```text
 (poly layer width
@@ -109,7 +140,7 @@ This reduces the amount of geometry passed to FreeRouting while maintaining the 
 
 The optimization is performed **during DSN export only**.
 
-The original EAGLE `.brd` file is not modified.
+The original `.brd` file is not modified.
 
 ## DSN output
 
@@ -127,9 +158,11 @@ The output includes:
 - Keepouts
 - Copper polygons
 
-The exporter keeps the original EAGLE routing information unless an option such as **Unroute all** explicitly disables it.
+The exporter keeps the original routing information unless an option such as **Unroute all** explicitly disables it.
 
 ## Installation
+
+### EAGLE CAD
 
 Copy:
 
@@ -145,10 +178,20 @@ In EAGLE, run the ULP from:
 File → Run ULP
 ```
 
+### Fusion 360 Electronics
+
+Copy:
+
+```text
+fusion2freerouting.ulp
+```
+
+into a directory accessible from Fusion 360 Electronics and run it from the board editor with the **Run ULP** command.
+
 ## Usage
 
-1. Open the desired board in EAGLE.
-2. Run `eagle2freerouter.ulp`.
+1. Open the desired board in EAGLE or in the Fusion 360 Electronics board editor.
+2. Run the ULP for your application (`eagle2freerouter.ulp` or `fusion2freerouting.ulp`).
 3. Configure the export options.
 4. Select the desired output file.
 5. Export the board to DSN.
@@ -172,19 +215,27 @@ The exporter preserves existing tracks and vias unless the corresponding protect
 
 Polygon handling is particularly important for boards containing large copper pours or circular copper areas.
 
-The circular polygon optimization only changes the representation written to the DSN file. It does not modify the original EAGLE board.
+The circular polygon optimization only changes the representation written to the DSN file. It does not modify the original board.
 
 ### Board outline
 
-The board outline is exported from the EAGLE board data and is used by FreeRouting as the routing boundary.
+The board outline is exported from the board data and is used by FreeRouting as the routing boundary.
 
 ### FreeRouting compatibility
 
 The generated DSN files are intended primarily for use with FreeRouting.
 
-Very complex EAGLE boards may still contain geometry that requires additional investigation if FreeRouting reports errors while loading the DSN.
+Very complex boards may still contain geometry that requires additional investigation if FreeRouting reports errors while loading the DSN.
 
 ## Version history
+
+### Version 7.1.5-fusion
+
+- First release of `fusion2freerouting.ulp`, optimized for Fusion 360 Electronics.
+- Uses the Fusion polygon objects: `polyPours` / `UL_POLYPOUR` for signal copper and `polyShapes` for board and package restrict areas, instead of the deprecated `polygons` loop.
+- Fixed string literals that contained raw line breaks (`unterminated string` error).
+- Added clickable links and a Credits section to the Help window.
+- Based on version 7.1.5 of the EAGLE version.
 
 ### Version 7.1.5
 
@@ -207,7 +258,7 @@ Very complex EAGLE boards may still contain geometry that requires additional in
 
 ### Version 7.1.3
 
-- Added recognition of geometrically circular EAGLE polygons.
+- Added recognition of geometrically circular polygons.
 - Circular polygons could be represented using DSN circular geometry to avoid extremely large polygon descriptions.
 - Improved FreeRouting compatibility with boards containing very large circular polygon geometries.
 
@@ -221,15 +272,25 @@ Very complex EAGLE boards may still contain geometry that requires additional in
 - Added the initial **Unroute all existing wires and vias** option.
 - Existing tracks and vias can be omitted from the DSN so FreeRouting can route the board from scratch.
 
+## Credits
+
+- EAGLE version 7.x by Arky - [amigatronic.com](https://amigatronic.com) - [github.com/amigatronic](https://github.com/amigatronic).
+- Based on an earlier design by Thomas Kaeubler and Alfons Wirtz.
+- Thanks to David Varley for finding the right Resolution settings.
+- Original version optimized for Freerouter, started in summer 2012.
+- [Freerouting](https://github.com/freerouting/freerouting): autorouter by Alfons Wirtz, now developed at [github.com/freerouting/freerouting](https://github.com/freerouting/freerouting). Documentation and software: [www.freerouting.app](https://www.freerouting.app).
+
+All original copyrights and credits remain with their respective authors.
+
 ## License
 
 See the license information included with the project.
 
 ## Disclaimer
 
-This ULP modifies the way EAGLE board data is represented in the exported DSN file.
+These ULPs modify the way board data is represented in the exported DSN file.
 
-Always keep a backup of the original EAGLE `.brd` file before experimenting with routing or automated export workflows.
+Always keep a backup of the original `.brd` file before experimenting with routing or automated export workflows.
 
 The generated DSN should be checked in FreeRouting before manufacturing.
 
@@ -237,6 +298,6 @@ The generated DSN should be checked in FreeRouting before manufacturing.
 
 **Eagle2FreeRouter**
 
-EAGLE CAD → Specctra DSN → FreeRouting
+EAGLE CAD / Fusion 360 Electronics → Specctra DSN → FreeRouting
 
-Developed for PCB routing workflows where an existing EAGLE board needs to be exported and optionally re-routed using FreeRouting.
+Developed for PCB routing workflows where an existing board needs to be exported and optionally re-routed using FreeRouting.
