@@ -240,7 +240,7 @@ Very complex boards may still contain geometry that requires additional investig
 - Added clickable links and a Credits section to the Help window.
 - Based on version 7.1.5 of the EAGLE version.
 
-### Version 7.1.5
+### Version 7.1.5 (for EagleCAD)
 
 - Fixed circular polygon DSN generation.
 - Corrected polygon closure so that the first vertex is repeated as the final vertex.
