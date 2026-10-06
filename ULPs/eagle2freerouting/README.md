@@ -1,4 +1,4 @@
-# Eagle and Fusion to FreeRouting
+# Eagle and Fusion to FreeRouting ULPs
 
 **ULP scripts for exporting EAGLE and Fusion 360 Electronics board files to Specctra DSN format for use with FreeRouting.**
 
