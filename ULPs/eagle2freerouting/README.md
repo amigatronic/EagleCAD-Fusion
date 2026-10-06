@@ -6,12 +6,14 @@ Eagle2FreeRouter converts a board into a DSN file that can be imported into Free
 
 ## Available versions
 
+![Options](screenshots/export_DSN_eaglecad.jpg)
+
 | File | Target |
 |---|---|
 | `eagle2freerouting.ulp` | EAGLE CAD |
 | `fusion2freerouting.ulp` | **Fusion 360 Electronics** (optimized for Fusion 360) |
 
-Both versions share the same features, export options and DSN output. Use `fusion2freerouting.ulp` when working in Fusion 360 Electronics and `eagle2freerouter.ulp` when working in EAGLE CAD.
+Both versions share the same features, export options and DSN output. Use `fusion2freerouting.ulp` when working in Fusion 360 Electronics and `eagle2freerouting.ulp` when working in EAGLE CAD.
 
 ## Features
 
@@ -36,6 +38,8 @@ Both versions share the same features, export options and DSN output. Use `fusio
 - Built-in **Help** window with clickable links and credits.
 
 ## Fusion 360 Electronics version
+
+![Options](screenshots/export_DSN_fusion.jpg)
 
 `fusion2freerouting.ulp` is the version optimized for **Fusion 360 Electronics**.
 
