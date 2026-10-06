@@ -27,12 +27,19 @@
     written as keepouts so the router does not cross them, their polygons are omitted.
     Added in-line help (Help button) and a DSN output file selector.
     Added "Unroute all": existing signal wires and vias are omitted from the DSN so Freerouter can reroute all nets.
-4 October 2026 - Version 7.1.3:
-    Circular signal polygons are detected and exported as native DSN circle shapes instead of polygon point chains.
+4 October 2026 - Version 7.1.4:
+    Circular signal polygons are detected and exported as filled DSN polygons rebuilt with 360 points.
+    This keeps the polygon filled while reducing extreme 3600-segment circular polygons by approximately 10x.
+5 October 2026 - Version 7.1.5:
+    Circular polygon reduction is now adaptive instead of using a fixed 360-point count.
+    The required number of points is calculated from the polygon radius and a 0.01 mm maximum
+    radial deviation. Reduction is applied only when the calculated point count is lower than
+    the original polygon segment count, so small polygons are never made more complex and
+    very large polygons retain their original resolution when additional points are justified.
 */
 
 //=====================================
-string version = "7.1.3 2026-10-04";
+string version = "7.1.5 2026-10-05";
 
 // User modifiable parameters ********************************************************
 string via_protect = ""; // Lock via's, polygons and wires per signal name before routing
@@ -41,6 +48,8 @@ string poly_drop = ""; // Remove named polygons before routing to avoid breaking
 string exclude_nets = ""; // Nets left out of the DSN (not routed), e.g. "GND, VCC". No wildcard.
 string wire_protect = ""; // For instance "GND, N$1". Use "*" for all elements.
 int unroute_all = 0; // Ignore existing signal wires and vias when generating the DSN.
+real circular_polygon_tolerance_mm = 0.01; // Maximum radial deviation allowed when reducing circular signal polygons.
+int circular_polygon_segments = 360; // Calculated point count used for circular signal polygons in the DSN.
 // To protect individual wires, set the style of those wires to WIRE_STYLE_SHORTDASH in Eagle.
 int u_layer_start = 110, u_layer_end = 120; // layer scan area to define single layer wire or via restricts
 // Draw in one of these user layers polygons, rectangles or circles to define the restricted areas
@@ -346,10 +355,10 @@ void load_layer_wires(UL_WIRE W, int L) {
 	return;
 }
 
-// Polygon circle detection *************************************************************
-// Freerouter accepts native DSN circle shapes. EAGLE signal polygons do not expose a
-// dedicated circle primitive, so circular polygon contours have to be recognized from
-// their wires before they are exported as a long polygon point chain.
+// Circular polygon detection ************************************************************
+// EAGLE signal polygons are filled areas. For circular polygons with excessive numbers
+// of short edges, detect the circular geometry and rebuild the filled DSN polygon with
+// a fixed number of points instead of exporting thousands of nearly identical segments.
 real poly_circle_x, poly_circle_y, poly_circle_radius;
 
 int polygon_is_circle(UL_POLYGON P) {
@@ -393,6 +402,25 @@ int polygon_is_circle(UL_POLYGON P) {
         poly_circle_x = arc_cx;
         poly_circle_y = arc_cy;
         poly_circle_radius = arc_r;
+
+        // Calculate the minimum number of polygon sides needed for the same
+        // maximum radial deviation used for straight-edge circular polygons.
+        real radius_mm = U2G * arc_r;
+        real tolerance_mm = circular_polygon_tolerance_mm;
+        int required_segments = 32;
+        if (radius_mm > tolerance_mm) {
+            real ratio = tolerance_mm / radius_mm;
+            real sine_half_angle = sqrt(2.0 * ratio - ratio * ratio);
+            real half_angle = asin(sine_half_angle);
+            if (half_angle > 0) {
+                required_segments = PI / half_angle + 1;
+                if (required_segments < 32) required_segments = 32;
+            }
+        }
+        if (required_segments < wire_count)
+            circular_polygon_segments = required_segments;
+        else
+            circular_polygon_segments = wire_count;
         return true;
     }
 
@@ -425,7 +453,53 @@ int polygon_is_circle(UL_POLYGON P) {
     poly_circle_x = cx;
     poly_circle_y = cy;
     poly_circle_radius = r;
+
+    // Calculate the minimum number of polygon sides needed to keep the maximum
+    // radial deviation below the configured tolerance. The deviation of an
+    // inscribed regular polygon is r * (1 - cos(PI / N)).
+    real radius_mm = U2G * r;
+    real tolerance_mm = circular_polygon_tolerance_mm;
+    int required_segments = 32;
+    if (radius_mm > tolerance_mm) {
+        real ratio = tolerance_mm / radius_mm;
+        real sine_half_angle = sqrt(2.0 * ratio - ratio * ratio);
+        real half_angle = asin(sine_half_angle);
+        if (half_angle > 0) {
+            required_segments = PI / half_angle + 1;
+            if (required_segments < 32) required_segments = 32;
+        }
+    }
+
+    // Never increase the complexity of an existing polygon. If its original
+    // segment count already meets the required precision, keep it unchanged.
+    if (required_segments < wire_count)
+        circular_polygon_segments = required_segments;
+    else
+        circular_polygon_segments = wire_count;
+
     return true;
+}
+
+string write_circular_polygon_points(void) {
+    // Generate a reduced point chain for a circular filled polygon.
+    string s, t;
+    real angle, x, y;
+
+    for (int i = 0; i <= circular_polygon_segments; i++) {
+        angle = 2.0 * PI * i / circular_polygon_segments;
+
+        x = poly_circle_x + poly_circle_radius * cos(angle);
+        y = poly_circle_y + poly_circle_radius * sin(angle);
+
+        // Avoid negative zero caused by floating-point rounding.
+        if (abs(x) < 0.0000001) x = 0;
+        if (abs(y) < 0.0000001) y = 0;
+
+        sprintf(s, " %f %f", U2G * x, U2G * y);
+        t += s;
+    }
+
+    return t;
 }
 
 void process_wires (void) {
@@ -1083,19 +1157,20 @@ string Wiring_d() {
 					}
 					else {
 						if (polygon_is_circle(P)) {
-							// Native DSN circle: the first value is the diameter.
-							sprintf(s, T2 + "(wire\n      (circle %s %f %f %f)\n",
-								LN2name(P.layer), U2G * poly_circle_radius * 2,
-								U2G * poly_circle_x, U2G * poly_circle_y);
-							t += s;
-						} else {
-							P.wires(W) {
-								load_layer_wires(W, W.layer);
-							}
-							process_wires();
-							sprintf(s,"    (wire\n      (poly %s %f ", LN2name(P.layer), U2G * P.width);
-							t += write_wire_shape(s, ") \n", false);
-						}
+    
+    // Keep this as a filled polygon and rebuild the circular contour.
+    sprintf(s, T2 + "(wire\n      (poly %s %f",
+        LN2name(P.layer),
+        U2G * P.width);
+    t += s + write_circular_polygon_points() + ")\n";
+} else {
+    P.wires(W) {
+        load_layer_wires(W, W.layer);
+    }
+    process_wires();
+    sprintf(s, "    (wire\n      (poly %s %f ", LN2name(P.layer), U2G * P.width);
+    t += write_wire_shape(s, ") \n", false);
+}
 						sprintf(s, "      (net \"%s\")", N.name); t += s;
 						protect = sig_match(poly_protect, N.name, true);
 						// This only protects a poly from moving, not from breaking up by other signal wires!
