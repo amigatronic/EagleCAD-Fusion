@@ -8,7 +8,7 @@ Eagle2FreeRouter converts a board into a DSN file that can be imported into Free
 
 | File | Target |
 |---|---|
-| `eagle2freerouter.ulp` | EAGLE CAD |
+| `eagle2freerouting.ulp` | EAGLE CAD |
 | `fusion2freerouting.ulp` | **Fusion 360 Electronics** (optimized for Fusion 360) |
 
 Both versions share the same features, export options and DSN output. Use `fusion2freerouting.ulp` when working in Fusion 360 Electronics and `eagle2freerouter.ulp` when working in EAGLE CAD.
@@ -54,7 +54,6 @@ Notes:
 - All other features (Unroute all, net exclusion, circular polygon optimization, DSN output selector) behave the same as in the EAGLE version.
 - The Help button opens links in the default web browser (Windows).
 
-The Fusion version identifies itself with the suffix `-fusion` in its version string (for example `7.1.5-fusion`).
 
 ## Unroute all
 
@@ -79,7 +78,7 @@ For example, a circular copper area may be represented by a polygon containing *
 
 Although geometrically valid, such a representation can produce unnecessarily large DSN files and can significantly increase the processing required by FreeRouting.
 
-Eagle2FreeRouter detects polygons that are geometrically circular and rebuilds their contour using an optimized number of vertices.
+Eagle2FreeRouting detects polygons that are geometrically circular and rebuilds their contour using an optimized number of vertices.
 
 ### Adaptive resolution
 
@@ -167,7 +166,7 @@ The exporter keeps the original routing information unless an option such as **U
 Copy:
 
 ```text
-eagle2freerouter.ulp
+eagle2freerouting.ulp
 ```
 
 into the EAGLE ULP directory or another directory accessible from EAGLE.
@@ -191,7 +190,7 @@ into a directory accessible from Fusion 360 Electronics and run it from the boar
 ## Usage
 
 1. Open the desired board in EAGLE or in the Fusion 360 Electronics board editor.
-2. Run the ULP for your application (`eagle2freerouter.ulp` or `fusion2freerouting.ulp`).
+2. Run the ULP for your application (`eagle2freerouting.ulp` or `fusion2freerouting.ulp`).
 3. Configure the export options.
 4. Select the desired output file.
 5. Export the board to DSN.
@@ -229,7 +228,7 @@ Very complex boards may still contain geometry that requires additional investig
 
 ## Version history
 
-### Version 7.1.5-fusion
+### Version 7.1.5 (for Fusion)
 
 - First release of `fusion2freerouting.ulp`, optimized for Fusion 360 Electronics.
 - Uses the Fusion polygon objects: `polyPours` / `UL_POLYPOUR` for signal copper and `polyShapes` for board and package restrict areas, instead of the deprecated `polygons` loop.
@@ -296,7 +295,7 @@ The generated DSN should be checked in FreeRouting before manufacturing.
 
 ## Project
 
-**Eagle2FreeRouter**
+**Eagle2FreeRouting**
 
 EAGLE CAD / Fusion 360 Electronics → Specctra DSN → FreeRouting
 
