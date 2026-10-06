@@ -39,7 +39,7 @@
 */
 
 //=====================================
-string version = "7.1.5 2026-10-05";
+string version = "7.1.5  - Oct. 5th, 2026";
 
 // User modifiable parameters ********************************************************
 string via_protect = ""; // Lock via's, polygons and wires per signal name before routing
@@ -1204,28 +1204,36 @@ string add_sig(string list, string sig) {
 
 // Shows the in-line help (text derived from the original parameter comments)
 void show_help(void) {
-	string h = "<b>Eagle2Freerouter " + version + "</b><br>by Arky - amigatronic.com - github.com/amigatronic<br><br>";
-	h += "<b>Signal lists</b><br>Signal names separated by commas, for instance: <i>GND, N$1</i>. ";
-	h += "Names are matched exactly (surrounding spaces are ignored). Use <i>*</i> for all signals. ";
-	h += "Select a signal in the list on the left and press <i>Add</i> to append it.<br><br>";
-	h += "<b>Protect vias / polygons / wires</b><br>Lock vias, polygons and wires of the listed signals before routing. ";
-	h += "Protecting a polygon only prevents it from moving, not from being broken up by wires of other signals. ";
-	h += "To protect individual wires, set the style of those wires to ShortDash (WIRE_STYLE_SHORTDASH) in Eagle.<br><br>";
-	h += "<b>Remove polygons</b><br>Removes the polygons of the listed signals before routing, to avoid breaking their consistency and generating airwires.<br><br>";
-	h += "<b>Unroute all</b><br>When enabled, existing signal wires and vias are omitted from the DSN. This makes the exported board unrouted for Freerouter; the Eagle board itself is not modified.<br><br>";
-	h += "<b>Exclude nets</b><br>The listed nets are left out of the DSN and will not be routed. Their existing wires and vias are ";
-	h += "written as keepouts so other nets do not cross them; their polygons are omitted. No wildcard is accepted.<br><br>";
-	h += "<b>Component outlines</b><br>Outlines (layers 21 and 51) have no influence on routing and are often drawn as many short lines, ";
-	h += "which can overload Freerouter. <i>Do not display</i> = off (default); <i>Connect lines</i> tries to join the lines; ";
-	h += "<i>Draw all details</i> draws every line individually.<br><br>";
-	h += "<b>Restrict layers scan range</b><br>User layers in this range define single layer wire or via restricts. ";
-	h += "Draw polygons, rectangles or circles in one of these layers. The NAME of the layer defines the applicable signal layer. ";
-	h += "Example: layer 110 named <i>wire_restrict_layer=12</i> adds its shapes as keepouts on layer 12 (if it exists); ";
-	h += "use <i>via_restrict_layer=N</i> for via restricts.<br><br>";
-	h += "<b>Wire end glue distance</b><br>Maximum distance (in micrometers) between close wire ends that are joined into one shape. ";
-	h += "Arcs smaller than this are ignored.<br><br>";
-	h += "<b>DSN output file</b><br>Destination of the generated Specctra DSN file (default: the board name with .dsn extension).";
-	dlgDialog("Eagle2Freerouter - Help") {
+string h = "<b>Eagle2Freerouter " + version + "</b><br><br><br>";
+h += "<b>Signal lists</b><br>Signal names separated by commas, for instance: <i>GND, N$1</i>. ";
+h += "Names are matched exactly (surrounding spaces are ignored). Use <i>*</i> for all signals. ";
+h += "Select a signal in the list on the left and press <i>Add</i> to append it.<br><br>";
+h += "<b>Protect vias / polygons / wires</b><br>Lock vias, polygons and wires of the listed signals before routing. ";
+h += "Protecting a polygon only prevents it from moving, not from being broken up by wires of other signals. ";
+h += "To protect individual wires, set the style of those wires to ShortDash (WIRE_STYLE_SHORTDASH) in Eagle.<br><br>";
+h += "<b>Remove polygons</b><br>Removes the polygons of the listed signals before routing, to avoid breaking their consistency and generating airwires.<br><br>";
+h += "<b>Unroute all</b><br>When enabled, existing signal wires and vias are omitted from the DSN. This makes the exported board unrouted for Freerouter; the Eagle board itself is not modified.<br><br>";
+h += "<b>Exclude nets</b><br>The listed nets are left out of the DSN and will not be routed. Their existing wires and vias are ";
+h += "written as keepouts so other nets do not cross them; their polygons are omitted. No wildcard is accepted.<br><br>";
+h += "<b>Component outlines</b><br>Outlines (layers 21 and 51) have no influence on routing and are often drawn as many short lines, ";
+h += "which can overload Freerouter. <i>Do not display</i> = off (default); <i>Connect lines</i> tries to join the lines; ";
+h += "<i>Draw all details</i> draws every line individually.<br><br>";
+h += "<b>Restrict layers scan range</b><br>User layers in this range define single layer wire or via restricts. ";
+h += "Draw polygons, rectangles or circles in one of these layers. The NAME of the layer defines the applicable signal layer. ";
+h += "Example: layer 110 named <i>wire_restrict_layer=12</i> adds its shapes as keepouts on layer 12 (if it exists); ";
+h += "use <i>via_restrict_layer=N</i> for via restricts.<br><br>";
+h += "<b>Wire end glue distance</b><br>Maximum distance (in micrometers) between close wire ends that are joined into one shape. ";
+h += "Arcs smaller than this are ignored.<br><br>";
+h += "<b>DSN output file</b><br>Destination of the generated Specctra DSN file (default: the board name with .dsn extension).<br><br>";
+h += "<b>Credits</b><br>";
+h += "<b>Eagle2Freerouter " + version + "</b><br>by Arky - <a href=\"https://www.amigatronic.com\">www.amigatronic.com</a> - <a href=\"https://github.com/amigatronic\">github.com/amigatronic</a><br>";
+h += "Based on an earlier design by Thomas Kaeubler and Alfons Wirtz.<br>";
+h += "Thanks to David Varley for finding the right Resolution settings.<br>";
+h += "Original version optimized for Freerouter, started in summer 2012.<br><br>";
+h += "<b>Freerouting</b><br>Autorouter by Alfons Wirtz, now developed at <a href=\"https://github.com/freerouting/freerouting\">github.com/freerouting/freerouting</a>.<br>";
+h += "Documentation and software: <a href=\"https://www.freerouting.app\">www.freerouting.app</a><br><br>";
+h += "All original copyrights and credits remain with their respective authors.";
+dlgDialog("Fusion2Freerouting - Help") {
 		dlgHBoxLayout { dlgSpacing(520); }
 		dlgHBoxLayout {
 			dlgVBoxLayout { dlgSpacing(400); }
