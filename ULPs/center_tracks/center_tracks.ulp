@@ -1,160 +1,1189 @@
-# Center Tracks
+#usage "<b>Center tracks between pads, vias and other tracks</b>"
+"<p>Generates an EAGLE script that shifts straight track segments, which pass between "
+"pads, vias, holes or tracks of other nets, to the middle of the corridor while keeping "
+"the clearances declared in the DRU. Several tracks in the same corridor are spaced evenly "
+"by repeating the calculation in a few passes."
+"<p>Works on a saved board. Review the generated script, run it on a copy of the board "
+"and finish with a DRC."
+"<p>Note: EAGLE's built-in Push Obstacles mode (set obstacle_mode push) pushes existing "
+"tracks aside while routing a new one. This ULP is complementary: it re-centers "
+"tracks that are already routed."
+#require 6.00.00;
 
-An EAGLE ULP that re-centers already routed tracks in the corridors between pads, vias, holes and tracks of other nets, while keeping the clearances defined in the board's Design Rules (DRU).
+// ---------------------------------------------------------------------------
+// User parameters (initial values of the dialog)
+// ---------------------------------------------------------------------------
+string net_list = "*";        // Nets to move, comma separated, * = all
+real safety_mm = 0.02;        // Extra margin added to the required clearance
+real max_gap_mm = 1.5;        // Obstacles farther than this (edge to edge) are ignored
+real min_shift_mm = 0.02;     // Shifts smaller than this are not worth doing
+real min_seg_mm = 0.5;        // Shorter segments are skipped
+int max_passes = 10;          // Maximum number of calculation passes
+int run_now = 0;              // Run the script right after its creation
+int automate = 1;             // Whole workflow: baseline Verify, script, execution, Verify again and comparison
+int restore_mode = 0;         // Obstacle mode in the script: 0 = Ignore, 1 = Walkaround, 2 = Push (set at the end), 3 = do not touch it
+int smd_guard = 0;            // 1 = SMD pads modeled as the circle that contains them (safer for moves, skips more)
+int verify_mode = 0;          // Only check the current board and write a report
+string out_file = "";         // Output script file
 
-```
-Before                         After
- ┌─────┐                        ┌─────┐
- │ pad │                        │ pad │
- └─────┘                        └─────┘
- ═══════ track  (tight)                      (even gaps)
-                                ═══════ track
- ─ ─ ─ ─ other net              ─ ─ ─ ─ other net
-```
+// ---------------------------------------------------------------------------
+// Constants and global data
+// ---------------------------------------------------------------------------
+real EPS = 0.0001;            // Coordinate tolerance (mm)
+real DRC_GUARD = 0.005;       // Always keep this much above the DRU limit (DRC rounding, grid snapping)
+real MIN_NEIGHBOR_MM = 0.05;  // Minimum length of a segment after the shift
+// Fixed obstacles (pads, smds, vias, holes). Kind: 0 = circle (hx = radius), 1 = rectangle
+real ox[], oy[], ohx[], ohy[], ocs[], osn[];
+real orad[];                  // corner radius of rounded SMD pads: the pad is the inner rectangle (shrunk by orad) inflated by orad
+int okind[], olay1[], olay2[], ocls[], otyp[];   // type: 0 pad/smd, 1 via, 2 hole
+string onet[];
+int oid[];                    // signal index of the obstacle net (-1 = none): integer compare is much faster than strings
+int obn = 0;
+// Signals and the net class clearance matrix (symmetric, 8 x 8 classes, in mm)
+string sig_name[];
+int sig_cls[];
+real cls_cl[];
+int nsig = 0;
+// All copper wire segments of the board (positions are updated as moves are simulated)
+real sx1[], sy1[], sx2[], sy2[], sw[];
+int slay[], sarc[], sprot[], snet[];
+int smoved[];                // 1 = segment modified by a simulated move (written to the plan file)
+int stopo[];                 // 1 = placeholder used only to find neighbors (arc chord), not an obstacle
+// snet < 0: copper that does not belong to a signal; slay == 0: board outline (applies to every copper layer)
+int nw = 0;
+int net_first[], net_last[], net_sel[];
+// Candidate segments: neighbor segments and the list of nearby obstacles
+// List entries: id < obn is a fixed obstacle, id >= obn is the wire (id - obn)
+int cja[], cjb[];
+int lst[], lst_start[], lst_cnt[];
+int lst_n = 0;
+// Design rules
+string dr_name[], dr_value[];
+int dr_count = 0;
+real dru_wp = 0.2, dru_wv = 0.2, dru_ww = 0.2, dru_cd = 0.4;
+// Scratch results of helper functions
+real e_nmin, e_nmax, e_tmin, e_tmax;
+real cr_x, cr_y;
+string script = "";
+string lscript[];            // MOVE commands collected per layer
+// Diagnostics: why segments were skipped (counted in the first pass only)
+int st_cnt[];
+string skip_rep = "";          // why segments are not moved (first pass), written to the _skipped.txt report
+int skip_n = 0;
+int cur_pass = 0;
+int cand_n = 0;
+real pick_half_mm = 0.05;     // Half size (mm) of the zoom window used before every MOVE (small pick area); 0 = no zoom
+int arc_bad = 0;
+// Results of verify_board()
+int v_count = 0, v_over = 0, v_ok = 0, v_bad = 0, v_unp = 0, v_plan_n = 0;
+string v_keys = "";           // one line per violation (layer|net|object): tells new violations from pre-existing ones              // Arcs that could not be approximated and are used as chords
 
-The ULP **does not modify the board**. It generates an EAGLE script (`.scr`) made of `MOVE` commands, together with a plan file describing the expected result. The script can be reviewed, executed on a copy of the board, and checked with a built-in verifier.
+// ---------------------------------------------------------------------------
+// Basic helpers
+// ---------------------------------------------------------------------------
+void ERROR(string msg) {
+    dlgMessageBox("!" + msg);
+    exit(0);
+}
+real ab(real x) { if (x < 0) return -x; return x; }
+real rmax(real a, real b) { if (a > b) return a; return b; }
+real rmin(real a, real b) { if (a < b) return a; return b; }
+real hyp(real dx, real dy) { return sqrt(dx * dx + dy * dy); }
+real spare(void) {
+    // Part of the safety margin that may be used up by already tight geometry (never goes below the DRU limit + DRC_GUARD)
+    return rmax(safety_mm - DRC_GUARD, 0);
+}
+void st_inc(int k) {
+    // Counts a skip reason, first pass only
+    if (cur_pass == 0) st_cnt[k] = st_cnt[k] + 1;
+}
+void skip_log(int i, string why) {
+    // Logs why segment i is not moved (first pass only)
+    if (cur_pass != 0 || skip_n >= 4000) return;
+    string l;
+    real sl = sqrt((sx2[i] - sx1[i]) * (sx2[i] - sx1[i]) + (sy2[i] - sy1[i]) * (sy2[i] - sy1[i]));
+    sprintf(l, "L%d  net %s  (%.3f, %.3f)-(%.3f, %.3f)  len %.2f mm  %s\n", slay[i], sig_name[snet[i]], sx1[i], sy1[i], sx2[i], sy2[i], sl, why);
+    skip_rep += l;
+    skip_n++;
+}
+void skip(int i, int k, string why) {
+    st_inc(k);
+    skip_log(i, why);
+}
+real to_grid_unit(real mm) {
+    // Script coordinates are read in the unit of the current grid, so mm values must be converted
+    board(B) {
+        switch (B.grid.unit) {
+            case GRID_UNIT_MIC:  return mm * 1000.0;
+            case GRID_UNIT_MIL:  return mm / 0.0254;
+            case GRID_UNIT_INCH: return mm / 25.4;
+        }
+    }
+    return mm;
+}
+string fwd(string s) {
+    // Converts backslashes to forward slashes (for the SCRIPT command)
+    string r = "";
+    for (int i = 0; i < strlen(s); i++) {
+        if (s[i] == '\\') r += "/"; else r += strsub(s, i, 1);
+    }
+    return r;
+}
+string chomp(string s) {
+    // Removes trailing CR, LF and spaces
+    while (strlen(s) && (s[strlen(s) - 1] == '\r' || s[strlen(s) - 1] == '\n' || s[strlen(s) - 1] == ' ')) s = strsub(s, 0, strlen(s) - 1);
+    return s;
+}
 
-> **Always work on a copy of the board** (or be ready to close it without saving). Finish with the EAGLE DRC.
+int sig_match(string list, string name, int allow_all) {
+    // Exact (trimmed) match of a signal name in a comma separated list. "*" matches all if allow_all is set.
+    string items[];
+    int cnt = strsplit(items, list, ',');
+    for (int i = 0; i < cnt; i++) {
+        string item = items[i];
+        while (strlen(item) && item[0] == ' ') item = strsub(item, 1);
+        while (strlen(item) && item[strlen(item) - 1] == ' ') item = strsub(item, 0, strlen(item) - 1);
+        if (allow_all && item == "*") return 1;
+        if (item != "" && item == name) return 1;
+    }
+    return 0;
+}
+string add_sig(string list, string sig) {
+    if (list == "") return sig;
+    if (sig_match(list, sig, 1)) return list;
+    return list + ", " + sig;
+}
 
-## Features
+// ---------------------------------------------------------------------------
+// Geometry (all values in mm)
+// ---------------------------------------------------------------------------
+real pt_seg_dist(real px, real py, real ax, real ay, real bx, real by) {
+    // Distance from a point to a segment
+    real dx = bx - ax, dy = by - ay, l2, t = 0;
+    l2 = dx * dx + dy * dy;
+    if (l2 > 0) {
+        t = ((px - ax) * dx + (py - ay) * dy) / l2;
+        if (t < 0) t = 0;
+        if (t > 1) t = 1;
+    }
+    real qx = px - ax - t * dx, qy = py - ay - t * dy;
+    return sqrt(qx * qx + qy * qy);
+}
+int seg_cross(real ax, real ay, real bx, real by, real cx, real cy, real dx, real dy) {
+    // 1 if segment AB properly crosses segment CD
+    real o1 = (bx - ax) * (cy - ay) - (by - ay) * (cx - ax);
+    real o2 = (bx - ax) * (dy - ay) - (by - ay) * (dx - ax);
+    real o3 = (dx - cx) * (ay - cy) - (dy - cy) * (ax - cx);
+    real o4 = (dx - cx) * (by - cy) - (dy - cy) * (bx - cx);
+    return (o1 * o2 < 0 && o3 * o4 < 0);
+}
+real seg_seg_dist(real ax, real ay, real bx, real by, real cx, real cy, real dx, real dy) {
+    // Minimum distance between two segments (negative if they cross)
+    if (seg_cross(ax, ay, bx, by, cx, cy, dx, dy)) return -1;
+    real d = pt_seg_dist(ax, ay, cx, cy, dx, dy);
+    d = rmin(d, pt_seg_dist(bx, by, cx, cy, dx, dy));
+    d = rmin(d, pt_seg_dist(cx, cy, ax, ay, bx, by));
+    d = rmin(d, pt_seg_dist(dx, dy, ax, ay, bx, by));
+    return d;
+}
+void rect_corner(int k, int q) {
+    // Corner q (0..3, cyclic order) of the rectangle obstacle k, result in cr_x, cr_y
+    real sxq = -1, syq = -1;
+    if (q == 1 || q == 2) sxq = 1;
+    if (q == 2 || q == 3) syq = 1;
+    real lx = sxq * ohx[k], ly = syq * ohy[k];
+    cr_x = ox[k] + lx * ocs[k] - ly * osn[k];
+    cr_y = oy[k] + lx * osn[k] + ly * ocs[k];
+}
+void rect_corner_in(int k, int q) {
+    // Corner q of the inner rectangle (shrunk by the corner radius) of obstacle k, result in cr_x, cr_y
+    real sxq = -1, syq = -1;
+    if (q == 1 || q == 2) sxq = 1;
+    if (q == 2 || q == 3) syq = 1;
+    real lx = sxq * (ohx[k] - orad[k]), ly = syq * (ohy[k] - orad[k]);
+    cr_x = ox[k] + lx * ocs[k] - ly * osn[k];
+    cr_y = oy[k] + lx * osn[k] + ly * ocs[k];
+}
+real rect_pt_dist(int k, real px, real py) {
+    // Distance from a point to the inner rectangle of obstacle k (0 if inside); the corner radius is subtracted by the caller
+    real dx = px - ox[k], dy = py - oy[k];
+    real lx = dx * ocs[k] + dy * osn[k];
+    real ly = -dx * osn[k] + dy * ocs[k];
+    real ex = rmax(ab(lx) - (ohx[k] - orad[k]), 0), ey = rmax(ab(ly) - (ohy[k] - orad[k]), 0);
+    return sqrt(ex * ex + ey * ey);
+}
+real obs_seg_dist(int k, real ax, real ay, real bx, real by) {
+    // Minimum distance between the segment AB (centerline) and the obstacle k. Negative if they overlap.
+    if (okind[k] == 0) return pt_seg_dist(ox[k], oy[k], ax, ay, bx, by) - ohx[k];
+    real best = rmin(rect_pt_dist(k, ax, ay), rect_pt_dist(k, bx, by));
+    if (best <= 0) return -1;
+    real qx[], qy[];
+    int q;
+    for (q = 0; q < 4; q++) {
+        rect_corner_in(k, q);
+        qx[q] = cr_x; qy[q] = cr_y;
+        best = rmin(best, pt_seg_dist(cr_x, cr_y, ax, ay, bx, by));
+    }
+    for (q = 0; q < 4; q++) {
+        int q2 = (q + 1) % 4;
+        if (seg_cross(ax, ay, bx, by, qx[q], qy[q], qx[q2], qy[q2])) return -1;
+    }
+    return best - orad[k];
+}
+void obs_extent(int k, real ax, real ay, real ux, real uy) {
+    // Extent of obstacle k in the frame of a segment starting at A with direction u (t along, n to the left)
+    real nx = -uy, ny = ux;
+    if (okind[k] == 0) {
+        real dx = ox[k] - ax, dy = oy[k] - ay;
+        real tc = dx * ux + dy * uy, nc = dx * nx + dy * ny;
+        e_tmin = tc - ohx[k]; e_tmax = tc + ohx[k];
+        e_nmin = nc - ohx[k]; e_nmax = nc + ohx[k];
+        return;
+    }
+    e_tmin = 1000000.0; e_tmax = -1000000.0; e_nmin = 1000000.0; e_nmax = -1000000.0;
+    for (int q = 0; q < 4; q++) {
+        rect_corner(k, q);
+        real t = (cr_x - ax) * ux + (cr_y - ay) * uy;
+        real n = (cr_x - ax) * nx + (cr_y - ay) * ny;
+        e_tmin = rmin(e_tmin, t); e_tmax = rmax(e_tmax, t);
+        e_nmin = rmin(e_nmin, n); e_nmax = rmax(e_nmax, n);
+    }
+}
+int wire_extent(int j, real ax, real ay, real ux, real uy, real len) {
+    // Lateral extent (including the half width) of the part of wire j that lies along the span of the segment.
+    // Returns 0 if the wire does not flank the span.
+    real nx = -uy, ny = ux;
+    real tp = (sx1[j] - ax) * ux + (sy1[j] - ay) * uy, np = (sx1[j] - ax) * nx + (sy1[j] - ay) * ny;
+    real tq = (sx2[j] - ax) * ux + (sy2[j] - ay) * uy, nq = (sx2[j] - ax) * nx + (sy2[j] - ay) * ny;
+    real t0, n0, t1, n1;
+    if (tp <= tq) { t0 = tp; n0 = np; t1 = tq; n1 = nq; }
+    else { t0 = tq; n0 = nq; t1 = tp; n1 = np; }
+    if (t1 <= 0 || t0 >= len) return 0;
+    real dt = t1 - t0, na = n0, nb = n1;
+    if (dt > EPS) {
+        if (t0 < 0) na = n0 + (n1 - n0) * (0 - t0) / dt;
+        if (t1 > len) nb = n1 - (n1 - n0) * (t1 - len) / dt;
+    }
+    e_nmin = rmin(na, nb) - sw[j] / 2;
+    e_nmax = rmax(na, nb) + sw[j] / 2;
+    return 1;
+}
+real obs_bound(int k) {
+    // Radius of a circle that contains the obstacle
+    if (okind[k] == 0) return ohx[k];
+    return sqrt(ohx[k] * ohx[k] + ohy[k] * ohy[k]);
+}
+real req_clear(int ocl, int k) {
+    // Required copper to copper clearance between a net of class ocl and the fixed obstacle k
+    real r = cls_cl[ocl * 8 + ocls[k]];
+    if (otyp[k] == 1) r = rmax(r, dru_wv);
+    else if (otyp[k] == 2) r = rmax(r, rmax(dru_wp, dru_cd));   // holes: copper/dimension rule (conservative)
+    else r = rmax(r, dru_wp);
+    return r + safety_mm;
+}
+real req_wire(int ocl, int j) {
+    // Required clearance between a net of class ocl and the wire j
+    if (slay[j] == 0) return dru_cd + safety_mm;           // board outline
+    int c = 0;
+    if (snet[j] >= 0) c = sig_cls[snet[j]];
+    return rmax(cls_cl[ocl * 8 + c], dru_ww) + safety_mm;
+}
+int seg_clear(int own, int layer, real ax, real ay, real bx, real by, real w) {
+    // 1 if the track AB (width w) keeps the required clearance to EVERY object of the board snapshot
+    // (pads, vias, holes, other copper, tracks of all other nets in their current simulated position, outline).
+    // Crossing or overlapping tracks give a negative distance and are always rejected.
+    int ocl = sig_cls[own];
+    real minx = rmin(ax, bx), maxx = rmax(ax, bx), miny = rmin(ay, by), maxy = rmax(ay, by);
+    for (int k = 0; k < obn; k++) {
+        if (oid[k] == own) continue;
+        if (layer < olay1[k] || layer > olay2[k]) continue;
+        real rq = req_clear(ocl, k);
+        real m = obs_bound(k) + w / 2 + rq;
+        if (ox[k] < minx - m || ox[k] > maxx + m || oy[k] < miny - m || oy[k] > maxy + m) continue;
+        if (obs_seg_dist(k, ax, ay, bx, by) - w / 2 < rq - spare() - EPS) return 0;   // safety margin is optional spare room
+    }
+    for (int j = 0; j < nw; j++) {
+        if (snet[j] == own || stopo[j]) continue;
+        if (slay[j] != layer && slay[j] != 0) continue;
+        real rw = req_wire(ocl, j);
+        real m2 = w / 2 + sw[j] / 2 + rw;
+        if (rmin(sx1[j], sx2[j]) > maxx + m2 || rmax(sx1[j], sx2[j]) < minx - m2) continue;
+        if (rmin(sy1[j], sy2[j]) > maxy + m2 || rmax(sy1[j], sy2[j]) < miny - m2) continue;
+        if (seg_seg_dist(ax, ay, bx, by, sx1[j], sy1[j], sx2[j], sy2[j]) - w / 2 - sw[j] / 2 < rw - spare() - EPS) return 0;
+    }
+    return 1;
+}
 
-- Centers straight track segments between obstacles on both sides, never going below the DRU limits.
-- Obstacles: pads, SMD pads (rotation and rounded corners included), vias, holes, tracks of other nets, board outline, copper rectangles/circles/texts and copper inside packages.
-- Reads wire/pad/via/copper-to-dimension distances from the DRU and the clearances of the net classes.
-- Repeats the calculation in several passes, so that multiple tracks in the same corridor end up evenly spaced.
-- Works on all copper layers, with the units of the current grid handled automatically.
-- Automated workflow: baseline check, script generation, execution, second check and comparison with the plan.
-- Detailed reports: why each segment was (or was not) moved, new violations, segments not where planned.
+// ---------------------------------------------------------------------------
+// Board data
+// ---------------------------------------------------------------------------
+int net_index(string net) {
+    if (net == "") return -1;
+    for (int i = 0; i < nsig; i++) if (sig_name[i] == net) return i;
+    return -1;
+}
+int cls_of(string net) {
+    if (net == "") return 0;
+    for (int i = 0; i < nsig; i++) if (sig_name[i] == net) return sig_cls[i];
+    return 0;
+}
+void add_obs(int kind, real x, real y, real hx, real hy, real ang, int l1, int l2, string net, int cls, int typ) {
+    real a = ang * PI / 180;
+    ox[obn] = x; oy[obn] = y; ohx[obn] = hx; ohy[obn] = hy;
+    ocs[obn] = cos(a); osn[obn] = sin(a); orad[obn] = 0;
+    okind[obn] = kind; olay1[obn] = l1; olay2[obn] = l2;
+    onet[obn] = net; oid[obn] = net_index(net); ocls[obn] = cls; otyp[obn] = typ;
+    obn++;
+}
+void read_dru(void) {
+    board(B) {
+        string brd_data, dr_lines[], par_list[];
+        if (!fileread(brd_data, B.name)) return;
+        if (!xmlelements(dr_lines, brd_data, "eagle/drawing/board/designrules")) return;
+        dr_count = xmlelements(par_list, dr_lines[0], "designrules/param");
+        for (int i = 0; i < dr_count; i++) {
+            dr_name[i] = xmlattribute(par_list[i], "param", "name");
+            dr_value[i] = xmlattribute(par_list[i], "param", "value");
+        }
+    }
+}
+real dru_mm(string parm, real fallback) {
+    // Value of a design rule parameter in mm
+    for (int i = 0; i < dr_count; i++) {
+        if (dr_name[i] == parm) {
+            string scale = strupr(strsub(dr_value[i], strlen(dr_value[i]) - 2));
+            real v = strtod(dr_value[i]);
+            if (scale == "MM") return v;
+            if (scale == "IL") return u2mm(mil2u(v));
+            if (scale == "CH") return u2mm(inch2u(v));
+            if (scale == "IC") return u2mm(mic2u(v));
+            return fallback;
+        }
+    }
+    return fallback;
+}
+void add_seg(real x1, real y1, real x2, real y2, real w, int layer, int net, int arc, int prot, int topo) {
+    // Appends a segment to the snapshot
+    sx1[nw] = x1; sy1[nw] = y1; sx2[nw] = x2; sy2[nw] = y2; sw[nw] = w;
+    slay[nw] = layer; snet[nw] = net; sarc[nw] = arc; sprot[nw] = prot; stopo[nw] = topo;
+    cja[nw] = -1; cjb[nw] = -1;
+    nw++;
+}
+void add_arc_polyline(real xc, real yc, real r, real a1, real a2, real w, int layer, int net,
+                      real ex1, real ey1, real ex2, real ey2, int chk) {
+    // Approximates an arc by short fixed segments. If the result does not match the end points of the wire
+    // (chk set), the chord is used instead and counted in arc_bad.
+    real da = a2 - a1;
+    while (da <= 0) da += 360;
+    real tol = rmin(0.01, r / 4), c = 0.9;
+    if (r > EPS) c = 1 - tol / r;
+    real step = 2 * acos(c) * 180 / PI;
+    if (step < 2) step = 2;
+    int n = trunc(da / step) + 1;
+    real px[], py[];
+    int i;
+    for (i = 0; i <= n; i++) {
+        real a = (a1 + da * i / n) * PI / 180;
+        px[i] = xc + r * cos(a);
+        py[i] = yc + r * sin(a);
+    }
+    if (chk) {
+        int ok = 0;
+        if (hyp(px[0] - ex1, py[0] - ey1) < 0.02 && hyp(px[n] - ex2, py[n] - ey2) < 0.02) ok = 1;
+        if (hyp(px[0] - ex2, py[0] - ey2) < 0.02 && hyp(px[n] - ex1, py[n] - ey1) < 0.02) ok = 1;
+        if (!ok) {
+            arc_bad++;
+            add_seg(ex1, ey1, ex2, ey2, w, layer, net, 1, 1, 0);
+            return;
+        }
+    }
+    for (i = 0; i < n; i++) add_seg(px[i], py[i], px[i + 1], py[i + 1], w, layer, net, 1, 1, 0);
+}
+void add_free_wire(real x1, real y1, real x2, real y2, real w, int layer, int isarc,
+                   real xc, real yc, real r, real a1, real a2) {
+    // Copper wire (or board outline) that does not belong to a signal
+    int lay = layer;
+    real wd = w;
+    if (layer == 20) { lay = 0; wd = 0; }
+    else if (layer < 1 || layer > 16) return;
+    if (isarc) add_arc_polyline(xc, yc, r, a1, a2, wd, lay, -1, x1, y1, x2, y2, 1);
+    else add_seg(x1, y1, x2, y2, wd, lay, -1, 0, 1, 0);
+}
+void add_free_rect(real x1, real y1, real x2, real y2, real ang, int layer) {
+    if (layer < 1 || layer > 16) return;
+    add_obs(1, (x1 + x2) / 2, (y1 + y2) / 2, ab(x2 - x1) / 2, ab(y2 - y1) / 2, ang, layer, layer, "", 0, 3);
+}
+void add_free_circle(real x, real y, real r, real w, int layer) {
+    if (layer == 20) { add_arc_polyline(x, y, r, 0, 360, 0, 0, -1, 0, 0, 0, 0, 0); return; }
+    if (layer < 1 || layer > 16) return;
+    if (w <= 0) add_obs(0, x, y, r, 0, 0, layer, layer, "", 0, 3);               // filled disc
+    else add_arc_polyline(x, y, r, 0, 360, w, layer, -1, 0, 0, 0, 0, 0);          // ring
+}
+void collect_data(void) {
+    board(B) {
+        nsig = 0; obn = 0; nw = 0; arc_bad = 0;
+        B.signals(S) {
+            sig_name[nsig] = S.name;
+            sig_cls[nsig] = S.class.number;
+            nsig++;
+        }
+        // A class only holds the clearances to the classes 0..its own number
+        B.classes(K) {
+            for (int c = 0; c <= K.number; c++) {
+                real cv = u2mm(K.clearance[c]);
+                cls_cl[K.number * 8 + c] = cv;
+                cls_cl[c * 8 + K.number] = cv;
+            }
+        }
+        B.elements(E) {
+            E.package.contacts(C) {
+                string net = C.signal;
+                int cls = cls_of(net);
+                if (C.pad) {
+                    int dia_u = max(C.pad.diameter[LAYER_TOP], C.pad.diameter[LAYER_BOTTOM]);
+                    real dia = u2mm(dia_u);
+                    switch (C.pad.shape[LAYER_TOP]) {
+                        case PAD_SHAPE_SQUARE:
+                            add_obs(1, u2mm(C.x), u2mm(C.y), dia / 2, dia / 2, C.pad.angle, 1, 16, net, cls, 0);
+                            break;
+                        case PAD_SHAPE_LONG:
+                            add_obs(1, u2mm(C.x), u2mm(C.y), dia * (1 + C.pad.elongation / 100.0) / 2, dia / 2, C.pad.angle, 1, 16, net, cls, 0);
+                            break;
+                        case PAD_SHAPE_OFFSET:
+                            // The hole sits at one end of the pad: cover the full pad length on both sides of the hole (conservative)
+                            add_obs(1, u2mm(C.x), u2mm(C.y), dia * (0.5 + C.pad.elongation / 100.0), dia / 2, C.pad.angle, 1, 16, net, cls, 0);
+                            break;
+                        default:
+                            add_obs(0, u2mm(C.x), u2mm(C.y), dia / 2, 0, 0, 1, 16, net, cls, 0);
+                    }
+                }
+                if (C.smd) {
+                    if (smd_guard) {
+                        // Orientation-agnostic: the circle that contains the whole pad, whatever its rotation
+                        real smd_r = hyp(u2mm(C.smd.dx), u2mm(C.smd.dy)) / 2;
+                        add_obs(0, u2mm(C.x), u2mm(C.y), smd_r, 0, 0, C.smd.layer, C.smd.layer, net, cls, 0);
+                    }
+                    else {
+                        add_obs(1, u2mm(C.x), u2mm(C.y), u2mm(C.smd.dx) / 2, u2mm(C.smd.dy) / 2, C.smd.angle,
+                                C.smd.layer, C.smd.layer, net, cls, 0);
+                        // Rounded corners (roundness 0..100 % of half the shorter side)
+                        if (C.smd.roundness > 0) orad[obn - 1] = rmin(u2mm(C.smd.dx), u2mm(C.smd.dy)) / 2 * C.smd.roundness / 100.0;
+                    }
+                }
+            }
+            E.package.holes(H) {
+                add_obs(0, u2mm(H.x), u2mm(H.y), u2mm(H.drill) / 2, 0, 0, 1, 16, "", 0, 2);
+            }
+            E.package.wires(W) {
+                if (W.arc) add_free_wire(u2mm(W.x1), u2mm(W.y1), u2mm(W.x2), u2mm(W.y2), u2mm(W.width), W.layer, 1,
+                                         u2mm(W.arc.xc), u2mm(W.arc.yc), u2mm(W.arc.radius), W.arc.angle1, W.arc.angle2);
+                else add_free_wire(u2mm(W.x1), u2mm(W.y1), u2mm(W.x2), u2mm(W.y2), u2mm(W.width), W.layer, 0, 0, 0, 0, 0, 0);
+            }
+            E.package.polygons(P) {
+                if (P.layer >= 1 && P.layer <= 16) P.wires(W) {
+                    if (W.arc) add_free_wire(u2mm(W.x1), u2mm(W.y1), u2mm(W.x2), u2mm(W.y2), u2mm(P.width), P.layer, 1,
+                                             u2mm(W.arc.xc), u2mm(W.arc.yc), u2mm(W.arc.radius), W.arc.angle1, W.arc.angle2);
+                    else add_free_wire(u2mm(W.x1), u2mm(W.y1), u2mm(W.x2), u2mm(W.y2), u2mm(P.width), P.layer, 0, 0, 0, 0, 0, 0);
+                }
+            }
+            E.package.circles(Ci) add_free_circle(u2mm(Ci.x), u2mm(Ci.y), u2mm(Ci.radius), u2mm(Ci.width), Ci.layer);
+            E.package.rectangles(R) add_free_rect(u2mm(R.x1), u2mm(R.y1), u2mm(R.x2), u2mm(R.y2), R.angle, R.layer);
+        }
+        B.signals(S) {
+            S.vias(V) {
+                int l1 = V.start, l2 = V.end;
+                if (l1 > l2) { l1 = V.end; l2 = V.start; }
+                add_obs(0, u2mm(V.x), u2mm(V.y), u2mm(max(V.diameter[LAYER_TOP], V.diameter[LAYER_BOTTOM])) / 2, 0, 0, l1, l2, S.name, S.class.number, 1);
+            }
+        }
+        B.holes(H) {
+            add_obs(0, u2mm(H.x), u2mm(H.y), u2mm(H.drill) / 2, 0, 0, 1, 16, "", 0, 2);
+        }
+        // Copper wires of all signals, stored net by net
+        int si = 0;
+        B.signals(N) {
+            net_first[si] = nw;
+            net_sel[si] = sig_match(net_list, N.name, 1);
+            N.wires(W) {
+                if (W.layer >= 1 && W.layer <= 16) {
+                    real wx1 = u2mm(W.x1), wy1 = u2mm(W.y1), wx2 = u2mm(W.x2), wy2 = u2mm(W.y2);
+                    int prot = 0;
+                    if (W.style == WIRE_STYLE_SHORTDASH) prot = 1;
+                    if (W.arc) {
+                        // The chord only serves to find neighbors; the real shape is the polyline
+                        add_seg(wx1, wy1, wx2, wy2, u2mm(W.width), W.layer, si, 1, 1, 1);
+                        add_arc_polyline(u2mm(W.arc.xc), u2mm(W.arc.yc), u2mm(W.arc.radius), W.arc.angle1, W.arc.angle2,
+                                         u2mm(W.width), W.layer, si, wx1, wy1, wx2, wy2, 1);
+                    }
+                    else add_seg(wx1, wy1, wx2, wy2, u2mm(W.width), W.layer, si, 0, prot, 0);
+                }
+            }
+            net_last[si] = nw - 1;
+            si++;
+        }
+        // Copper that does not belong to a signal, and the board outline: fixed obstacles
+        B.wires(W) {
+            if (W.arc) add_free_wire(u2mm(W.x1), u2mm(W.y1), u2mm(W.x2), u2mm(W.y2), u2mm(W.width), W.layer, 1,
+                                     u2mm(W.arc.xc), u2mm(W.arc.yc), u2mm(W.arc.radius), W.arc.angle1, W.arc.angle2);
+            else add_free_wire(u2mm(W.x1), u2mm(W.y1), u2mm(W.x2), u2mm(W.y2), u2mm(W.width), W.layer, 0, 0, 0, 0, 0, 0);
+        }
+        B.polygons(P) {
+            if (P.layer >= 1 && P.layer <= 16) P.wires(W) {
+                if (W.arc) add_free_wire(u2mm(W.x1), u2mm(W.y1), u2mm(W.x2), u2mm(W.y2), u2mm(P.width), P.layer, 1,
+                                         u2mm(W.arc.xc), u2mm(W.arc.yc), u2mm(W.arc.radius), W.arc.angle1, W.arc.angle2);
+                else add_free_wire(u2mm(W.x1), u2mm(W.y1), u2mm(W.x2), u2mm(W.y2), u2mm(P.width), P.layer, 0, 0, 0, 0, 0, 0);
+            }
+        }
+        B.circles(Ci) add_free_circle(u2mm(Ci.x), u2mm(Ci.y), u2mm(Ci.radius), u2mm(Ci.width), Ci.layer);
+        B.rectangles(R) add_free_rect(u2mm(R.x1), u2mm(R.y1), u2mm(R.x2), u2mm(R.y2), R.angle, R.layer);
+        B.texts(T) {
+            if (T.layer >= 1 && T.layer <= 16) {
+                T.wires(W) add_free_wire(u2mm(W.x1), u2mm(W.y1), u2mm(W.x2), u2mm(W.y2), u2mm(W.width), T.layer, 0, 0, 0, 0, 0, 0);
+            }
+        }
+    }
+}
 
-## Requirements
+// ---------------------------------------------------------------------------
+// Candidate segments
+// ---------------------------------------------------------------------------
+int touches_own(real px, real py, int layer, int own) {
+    // 1 if the point lies on a pad or via of the same net
+    for (int k = 0; k < obn; k++) {
+        if (oid[k] != own) continue;
+        if (layer < olay1[k] || layer > olay2[k]) continue;
+        real dx = ox[k] - px, dy = oy[k] - py;
+        if (sqrt(dx * dx + dy * dy) <= obs_bound(k) + EPS) return 1;
+    }
+    return 0;
+}
+int find_neighbor(int i, real px, real py) {
+    // Index of the only other segment of the same net ending at the point on the same layer; -1 none, -2 several
+    int found = -1, si = snet[i];
+    for (int j = net_first[si]; j <= net_last[si]; j++) {
+        if (j == i || slay[j] != slay[i]) continue;
+        if ((ab(sx1[j] - px) < EPS && ab(sy1[j] - py) < EPS) || (ab(sx2[j] - px) < EPS && ab(sy2[j] - py) < EPS)) {
+            if (found >= 0) return -2;
+            found = j;
+        }
+    }
+    return found;
+}
+void build_candidates(void) {
+    // A candidate is a straight segment whose two ends are plain bends with a straight neighbor.
+    // For each candidate the nearby obstacles (pads, vias, holes and wires of other nets) are listed once.
+    real margin = 4 * max_gap_mm + 1;
+    for (int si = 0; si < nsig; si++) {
+        if (!net_sel[si]) continue;
+        for (int i = net_first[si]; i <= net_last[si]; i++) {
+            if (sarc[i]) continue;
+            if (sprot[i]) { skip_log(i, "protected (ShortDash style)"); continue; }
+            real ax = sx1[i], ay = sy1[i], bx = sx2[i], by = sy2[i];
+            int layer = slay[i];
+            if (touches_own(ax, ay, layer, si) || touches_own(bx, by, layer, si)) {
+                skip_log(i, "an end is on a pad or via of its own net: that end cannot move");
+                continue;
+            }
+            int ja = find_neighbor(i, ax, ay), jb = find_neighbor(i, bx, by);
+            if (ja < 0 || jb < 0 || ja == jb) {
+                skip_log(i, "an end is not a plain bend (free end, junction with several wires, or loop)");
+                continue;
+            }
+            if (sarc[ja] || sarc[jb] || sprot[ja] || sprot[jb]) {
+                skip_log(i, "a neighbor segment is an arc or protected");
+                continue;
+            }
+            cja[i] = ja; cjb[i] = jb;
+            cand_n++;
+            // Bounding box of the segment and its two neighbors
+            real minx = rmin(rmin(ax, bx), rmin(rmin(sx1[ja], sx2[ja]), rmin(sx1[jb], sx2[jb])));
+            real maxx = rmax(rmax(ax, bx), rmax(rmax(sx1[ja], sx2[ja]), rmax(sx1[jb], sx2[jb])));
+            real miny = rmin(rmin(ay, by), rmin(rmin(sy1[ja], sy2[ja]), rmin(sy1[jb], sy2[jb])));
+            real maxy = rmax(rmax(ay, by), rmax(rmax(sy1[ja], sy2[ja]), rmax(sy1[jb], sy2[jb])));
+            lst_start[i] = lst_n;
+            for (int k = 0; k < obn; k++) {
+                if (oid[k] == si) continue;
+                if (layer < olay1[k] || layer > olay2[k]) continue;
+                real m = margin + obs_bound(k);
+                if (ox[k] < minx - m || ox[k] > maxx + m || oy[k] < miny - m || oy[k] > maxy + m) continue;
+                lst[lst_n] = k; lst_n++;
+            }
+            for (int j = 0; j < nw; j++) {
+                if (snet[j] == si || stopo[j]) continue;
+                if (slay[j] != layer && slay[j] != 0) continue;
+                real m2 = margin + sw[j] / 2;
+                if (rmin(sx1[j], sx2[j]) > maxx + m2 || rmax(sx1[j], sx2[j]) < minx - m2) continue;
+                if (rmin(sy1[j], sy2[j]) > maxy + m2 || rmax(sy1[j], sy2[j]) < miny - m2) continue;
+                lst[lst_n] = obn + j; lst_n++;
+            }
+            lst_cnt[i] = lst_n - lst_start[i];
+        }
+    }
+}
 
-- EAGLE 6.00 or later (the ULP uses `#require 6.00.00`).
-- A **saved** board: the design rules are read from the `.brd` file.
-- Only the layers 1-16 (copper) are handled.
+// ---------------------------------------------------------------------------
+// Segment processing
+// ---------------------------------------------------------------------------
+void set_vertex(int j, real oldx, real oldy, real newx, real newy) {
+    // Moves the end of segment j located at (oldx, oldy) to (newx, newy)
+    if (ab(sx1[j] - oldx) < EPS && ab(sy1[j] - oldy) < EPS) { sx1[j] = newx; sy1[j] = newy; }
+    else if (ab(sx2[j] - oldx) < EPS && ab(sy2[j] - oldy) < EPS) { sx2[j] = newx; sy2[j] = newy; }
+}
+void emit_move(int layer, real vx, real vy, real tx, real ty) {
+    // Appends to the commands of the layer: zoom on the vertex (small pick area), then the MOVE of that vertex
+    string line;
+    if (pick_half_mm > 0) {
+        sprintf(line, "WINDOW (%f %f) (%f %f);\n", to_grid_unit(vx - pick_half_mm), to_grid_unit(vy - pick_half_mm),
+                to_grid_unit(vx + pick_half_mm), to_grid_unit(vy + pick_half_mm));
+        lscript[layer] = lscript[layer] + line;
+    }
+    sprintf(line, "MOVE (%f %f) (%f %f);\n", to_grid_unit(vx), to_grid_unit(vy), to_grid_unit(tx), to_grid_unit(ty));
+    lscript[layer] = lscript[layer] + line;
+}
+int process_net(int own) {
+    // One pass over the candidate segments of a net. Returns the number of segments shifted.
+    int cnt = 0;
+    for (int i = net_first[own]; i <= net_last[own]; i++) {
+        int ja = cja[i], jb = cjb[i];
+        if (ja < 0) continue;
+        real ax = sx1[i], ay = sy1[i], bx = sx2[i], by = sy2[i], w = sw[i];
+        real len = sqrt((bx - ax) * (bx - ax) + (by - ay) * (by - ay));
+        if (len < min_seg_mm) { skip(i, 0, "shorter than Min segment length"); continue; }
+        int layer = slay[i];
+        // Far ends of the two neighbors
+        real fax, fay, fbx, fby;
+        if (ab(sx1[ja] - ax) < EPS && ab(sy1[ja] - ay) < EPS) { fax = sx2[ja]; fay = sy2[ja]; }
+        else { fax = sx1[ja]; fay = sy1[ja]; }
+        if (ab(sx1[jb] - bx) < EPS && ab(sy1[jb] - by) < EPS) { fbx = sx2[jb]; fby = sy2[jb]; }
+        else { fbx = sx1[jb]; fby = sy1[jb]; }
+        // Free space on both sides of the segment
+        real ux = (bx - ax) / len, uy = (by - ay) / len, nx = -uy, ny = ux;
+        string why;
+        real slackL = 1000000.0, slackR = 1000000.0;   // smallest physical gap on each side
+        real limL = 1000000.0, limR = 1000000.0;       // smallest margin above the DRU requirement on each side
+        int hasL = 0, hasR = 0, bad = 0;
+        for (int e = lst_start[i]; e < lst_start[i] + lst_cnt[i]; e++) {
+            int id = lst[e];
+            real gap, slack, rq;
+            if (id < obn) {
+                real bnd = obs_bound(id);
+                real dx = ox[id] - ax, dy = oy[id] - ay;
+                if (ab(dx * nx + dy * ny) > bnd + max_gap_mm + w + 1) continue;
+                real tc = dx * ux + dy * uy;
+                if (tc < -bnd - 1 || tc > len + bnd + 1) continue;
+                obs_extent(id, ax, ay, ux, uy);
+                if (e_tmax <= 0 || e_tmin >= len) continue;
+                rq = req_clear(sig_cls[own], id);
+            }
+            else {
+                int j = id - obn;
+                if (!wire_extent(j, ax, ay, ux, uy, len)) continue;
+                rq = req_wire(sig_cls[own], j);
+            }
+            if (e_nmin > 0) {                                  // left side
+                gap = e_nmin - w / 2;
+                if (gap > max_gap_mm) continue;
+                slack = gap;
+                if (slack < slackL) slackL = slack;
+                if (gap - rq < limL) limL = gap - rq;
+                hasL = 1;
+            }
+            else if (e_nmax < 0) {                             // right side
+                gap = -e_nmax - w / 2;
+                if (gap > max_gap_mm) continue;
+                slack = gap;
+                if (slack < slackR) slackR = slack;
+                if (gap - rq < limR) limR = gap - rq;
+                hasR = 1;
+            }
+            else { bad = 1; break; }                           // overlaps the centerline
+        }
+        if (bad) { skip(i, 1, "an obstacle lies on the centerline of the segment"); continue; }
+        if (!hasL || !hasR) {
+            if (!hasL && !hasR) skip(i, 2, "no obstacle within Max side gap on either side");
+            else if (!hasL) skip(i, 2, "no obstacle within Max side gap on the left side");
+            else skip(i, 2, "no obstacle within Max side gap on the right side");
+            continue;
+        }
+        if (slackL < -spare() - EPS || slackR < -spare() - EPS) {
+            sprintf(why, "already closer than allowed to an obstacle (gap left %.3f, right %.3f mm)", slackL, slackR);
+            skip(i, 3, why);
+            continue;
+        }
+        real s = (slackL - slackR) / 2;                        // geometric centering, > 0 moves to the left
+        // The shift never goes beyond what the DRU allows: it is limited by the tightest obstacle on each side
+        // (a corridor with different clearances is centered as much as possible instead of being skipped)
+        real s_hi = limL + spare(), s_lo = -(limR + spare());
+        if (s_lo > s_hi) {
+            sprintf(why, "no feasible shift: margin above the DRU left %.3f, right %.3f mm at the tightest spots along the whole segment", limL, limR);
+            skip(i, 3, why);
+            continue;
+        }
+        if (s > s_hi) s = s_hi;
+        if (s < s_lo) s = s_lo;
+        if (ab(s) < min_shift_mm) {
+            sprintf(why, "possible shift %.3f mm is below Min shift (limited by the tightest spots along the segment: margins left %.3f, right %.3f mm)", ab(s), limL, limR);
+            skip(i, 4, why);
+            continue;
+        }
+        // New vertices: intersection of the shifted line with the neighbor lines
+        real vax = ax - fax, vay = ay - fay, vbx = bx - fbx, vby = by - fby;
+        real lena = sqrt(vax * vax + vay * vay), lenb = sqrt(vbx * vbx + vby * vby);
+        if (lena < EPS || lenb < EPS) { skip(i, 5, "a neighbor segment is too short"); continue; }
+        real da = vax * nx + vay * ny, db = vbx * nx + vby * ny;
+        if (ab(da) < 0.05 * lena || ab(db) < 0.05 * lenb) { skip(i, 5, "a neighbor is almost parallel to the segment"); continue; }   // neighbor almost parallel
+        if (ab(s) * lena / ab(da) > 4 * max_gap_mm) { skip(i, 5, "the end vertex would travel too far"); continue; }          // vertex would travel too far
+        if (ab(s) * lenb / ab(db) > 4 * max_gap_mm) { skip(i, 5, "the end vertex would travel too far"); continue; }
+        real ka = 1 + s / da, kb = 1 + s / db;
+        if (ka * lena < MIN_NEIGHBOR_MM || kb * lenb < MIN_NEIGHBOR_MM) { skip(i, 5, "a neighbor would become shorter than the minimum"); continue; }
+        real nax = fax + ka * vax, nay = fay + ka * vay;
+        real nbx = fbx + kb * vbx, nby = fby + kb * vby;
+        if ((nbx - nax) * ux + (nby - nay) * uy < MIN_NEIGHBOR_MM) { skip(i, 5, "the segment would become too short"); continue; }
+        // The three modified segments must keep the clearance to every object of the snapshot (full scan)
+        if (!seg_clear(own, layer, fax, fay, nax, nay, sw[ja])) { skip(i, 6, "moving it would violate the clearance of neighbor A"); continue; }
+        if (!seg_clear(own, layer, nax, nay, nbx, nby, w)) { skip(i, 6, "moving it would violate the clearance of the segment itself"); continue; }
+        if (!seg_clear(own, layer, nbx, nby, fbx, fby, sw[jb])) { skip(i, 6, "moving it would violate the clearance of neighbor B"); continue; }
+        // MOVE picks objects with a pick radius measured in screen pixels: each vertex is zoomed in (see emit_move)
+        // and the moves are grouped per layer (only that layer is displayed while its vertices are picked).
+        emit_move(layer, ax, ay, nax, nay);
+        emit_move(layer, bx, by, nbx, nby);
+        set_vertex(i, ax, ay, nax, nay); set_vertex(ja, ax, ay, nax, nay);
+        set_vertex(i, bx, by, nbx, nby); set_vertex(jb, bx, by, nbx, nby);
+        smoved[i] = 1; smoved[ja] = 1; smoved[jb] = 1;
+        cnt++;
+    }
+    return cnt;
+}
 
-## Installation
+// ---------------------------------------------------------------------------
+// Verify mode
+// ---------------------------------------------------------------------------
+void verify_board(int use_plan, string rf, int quiet) {
+    // Checks the board as it is now: every signal wire against pads, vias, holes, other copper, other wires and the outline.
+    // The safety margin is not counted, only the DRU limits.
+    string rep = "", l, kk;
+    int vc = 0, ov = 0;
+    v_keys = "";
+    for (int i = 0; i < nw; i++) {
+        if (snet[i] < 0 || stopo[i]) continue;
+        string ni = sig_name[snet[i]];
+        int ocl = sig_cls[snet[i]], li = slay[i];
+        real ax = sx1[i], ay = sy1[i], bx = sx2[i], by = sy2[i], w = sw[i];
+        real minx = rmin(ax, bx), maxx = rmax(ax, bx), miny = rmin(ay, by), maxy = rmax(ay, by);
+        real mx = (ax + bx) / 2, my = (ay + by) / 2;
+        for (int k = 0; k < obn; k++) {
+            if (oid[k] == snet[i]) continue;
+            if (li < olay1[k] || li > olay2[k]) continue;
+            real rq = req_clear(ocl, k) - safety_mm;
+            real m = obs_bound(k) + w / 2 + rq;
+            if (ox[k] < minx - m || ox[k] > maxx + m || oy[k] < miny - m || oy[k] > maxy + m) continue;
+            real g = obs_seg_dist(k, ax, ay, bx, by) - w / 2;
+            if (g < rq - EPS) {
+                vc++;
+                if (g < 0) ov++;
+                string ot = "pad/smd";
+                if (otyp[k] == 1) ot = "via";
+                if (otyp[k] == 2) ot = "hole";
+                if (otyp[k] == 3) ot = "copper object";
+                sprintf(kk, "L%d|%s|%s|%s\n", li, ni, ot, onet[k]);
+                v_keys += kk;
+                if (vc <= 400) {
+                    sprintf(l, "L%d  net %s  vs  %s of net '%s'  gap=%.4f required=%.4f  at (%.3f, %.3f)%s\n",
+                            li, ni, ot, onet[k], g, rq, mx, my, g < 0 ? "  OVERLAP" : "");
+                    rep += l;
+                }
+            }
+        }
+        for (int j = 0; j < nw; j++) {
+            if (snet[j] == snet[i] || stopo[j]) continue;
+            if (snet[j] >= 0 && j < i) continue;                       // signal pairs are reported once
+            if (slay[j] != li && slay[j] != 0) continue;
+            real rw = req_wire(ocl, j) - safety_mm;
+            real m2 = w / 2 + sw[j] / 2 + rw;
+            if (rmin(sx1[j], sx2[j]) > maxx + m2 || rmax(sx1[j], sx2[j]) < minx - m2) continue;
+            if (rmin(sy1[j], sy2[j]) > maxy + m2 || rmax(sy1[j], sy2[j]) < miny - m2) continue;
+            real g2 = seg_seg_dist(ax, ay, bx, by, sx1[j], sy1[j], sx2[j], sy2[j]) - w / 2 - sw[j] / 2;
+            if (g2 < rw - EPS) {
+                vc++;
+                if (g2 < 0) ov++;
+                string nj = "free copper";
+                if (snet[j] >= 0) nj = "net " + sig_name[snet[j]];
+                if (slay[j] == 0) nj = "board outline";
+                sprintf(kk, "L%d|%s|%s\n", li, ni, nj);
+                v_keys += kk;
+                if (vc <= 400) {
+                    sprintf(l, "L%d  net %s  vs  %s  gap=%.4f required=%.4f  at (%.3f, %.3f)%s\n",
+                            li, ni, nj, g2, rw, mx, my, g2 < 0 ? "  OVERLAP" : "");
+                    rep += l;
+                }
+            }
+        }
+    }
+    // Compare with the plan written together with the script: the segments as they should be after the moves
+    string pc = "", plan_lines[];
+    int pl_n = 0, pl_ok = 0, pl_bad = 0, pl_unp = 0;
+    if (use_plan) pl_n = fileread(plan_lines, filesetext(out_file, "_plan.txt"));
+    for (int q = 0; q < pl_n; q++) {
+        string pf[];
+        int nf = strsplit(pf, plan_lines[q], '\t');
+        if (nf < 6) continue;
+        int pl_planned = 1;
+        if (nf >= 7) pl_planned = strtol(pf[6]);
+        int pl_lay = strtol(pf[0]);
+        real e1x = strtod(pf[2]), e1y = strtod(pf[3]), e2x = strtod(pf[4]), e2y = strtod(pf[5]);
+        int pl_net = -1;
+        for (int nn = 0; nn < nsig; nn++) if (sig_name[nn] == pf[1]) pl_net = nn;
+        if (pl_net < 0) continue;
+        real best = 1000000.0;
+        int bj = -1;
+        for (int j = net_first[pl_net]; j <= net_last[pl_net]; j++) {
+            if (stopo[j] || slay[j] != pl_lay) continue;
+            real d1 = rmax(hyp(sx1[j] - e1x, sy1[j] - e1y), hyp(sx2[j] - e2x, sy2[j] - e2y));
+            real d2 = rmax(hyp(sx1[j] - e2x, sy1[j] - e2y), hyp(sx2[j] - e1x, sy2[j] - e1y));
+            real dm = rmin(d1, d2);
+            if (dm < best) { best = dm; bj = j; }
+        }
+        if (best <= 0.002) pl_ok++;
+        else {
+            pl_bad++;
+            if (!pl_planned) pl_unp++;
+            if (pl_bad <= 400) {
+                if (bj < 0) sprintf(l, "L%d  net %s  expected (%.4f, %.4f)-(%.4f, %.4f)  NOT FOUND, no wire on this layer\n",
+                                    pl_lay, pf[1], e1x, e1y, e2x, e2y);
+                else sprintf(l, "L%d  net %s  expected (%.4f, %.4f)-(%.4f, %.4f)  closest actual (%.4f, %.4f)-(%.4f, %.4f)  max offset %.4f mm\n",
+                             pl_lay, pf[1], e1x, e1y, e2x, e2y, sx1[bj], sy1[bj], sx2[bj], sy2[bj], best);
+                if (!pl_planned) pc += "UNPLANNED CHANGE  ";
+                pc += l;
+            }
+        }
+    }
+    output(rf, "wt") {
+        printf("Verify report (DRU limits, coordinates in mm)\n%d violation(s), %d of them overlaps\n%s", vc, ov, rep);
+        if (vc > 400) printf("\n... only the first 400 are listed\n");
+        if (use_plan) {
+            printf("\nPlan check (segments expected after the script)\n");
+            if (pl_n > 0) printf("%d matching, %d differing (%d of them were not planned to move)\n%s", pl_ok, pl_bad, pl_unp, pc);
+            else printf("no plan file found\n");
+        }
+    }
+    v_count = vc; v_over = ov; v_ok = pl_ok; v_bad = pl_bad; v_unp = pl_unp; v_plan_n = pl_n;
+    if (quiet) return;
+    string vm;
+    sprintf(vm, "%d violation(s), %d overlap(s).\nPlan check: %d matching, %d differing (%d not planned).\nReport written to:\n%s", vc, ov, pl_ok, pl_bad, pl_unp, rf);
+    if (arc_bad) {
+        string am;
+        sprintf(am, "\n%d arc(s) could not be approximated and were treated as chords.", arc_bad);
+        vm += am;
+    }
+    dlgMessageBox(":" + vm);
+}
 
-1. Copy `center_tracks.ulp` to your EAGLE `ulp` folder, or to any folder listed in *Options > Directories > User Language Programs*.
-2. Open a board and run it with `File > Run ULP...` or from the command line: `RUN center_tracks.ulp`
+// ---------------------------------------------------------------------------
+// GUI
+// ---------------------------------------------------------------------------
+void finish_automation(void) {
+    // Second phase of the automatic run: started by the last line of the generated script.
+    // Verifies the board, compares it with the baseline and with the plan, shows the verdict.
+    string rf = filesetext(out_file, "_verify_after.txt");
+    verify_board(1, rf, 1);
+    string bl[], bf[], kl[];
+    int bn = fileread(bl, filesetext(out_file, "_baseline.txt"));
+    int b_count = -1, b_over = 0, a, b2;
+    if (bn > 0 && strsplit(bf, bl[0], '\t') >= 3) { b_count = strtol(bf[1]); b_over = strtol(bf[2]); }
+    for (b2 = 1; b2 < bn; b2++) bl[b2] = chomp(bl[b2]);
+    int kn = strsplit(kl, v_keys, '\n'), v_new = 0;
+    for (a = 0; a < kn; a++) {
+        string key = chomp(kl[a]);
+        if (key == "") continue;
+        int found = 0;
+        for (b2 = 1; b2 < bn; b2++) if (bl[b2] == key) { found = 1; break; }
+        if (!found) v_new++;
+    }
+    int good = (v_new == 0 && v_over <= b_over && v_bad == 0);
+    string msg;
+    sprintf(msg, "Automatic run finished.\n\nBefore the script: %d violation(s), %d overlap(s)\nAfter the script: %d violation(s), %d overlap(s), %d of them new\nPlan check: %d matching, %d differing (%d not planned to move)\n\n",
+            b_count, b_over, v_count, v_over, v_new, v_ok, v_bad, v_unp);
+    if (b_count < 0) msg += "Baseline file not found: 'new' violations cannot be told apart.\n\n";
+    if (good) msg += "RESULT: OK. No new violations and the board matches the plan. Run the EAGLE DRC as the final check.";
+    else msg += "RESULT: ATTENTION. New violations or segments that are not where planned. See the report. Consider closing the board without saving or using UNDO.";
+    msg += "\n\nReport: " + rf;
+    if (good) dlgMessageBox(":" + msg);
+    else dlgMessageBox("!" + msg);
+}
 
-## Quick start (recommended)
+void show_help(void) {
+    string h = "";
+    h += "<b>Center tracks between pads, vias and other tracks</b>";
+    h += "<br>Moves straight track segments to the middle of the corridor between pads, vias, holes and tracks of other nets, keeping the clearances of the DRU. ";
+    h += "The ULP does not change the board: it writes an EAGLE script (<i>.scr</i>) with MOVE commands, plus a <i>_plan.txt</i> file with the expected result.";
+    h += "<hr>";
+    h += "<b>Automate (recommended)</b><ol>";
+    h += "<li><b>Baseline:</b> the board is checked before anything is changed. The EAGLE DRC should be clean on the original board, so the result should be 0 violations. ";
+    h += "If it is not, you get a warning: either they are false positives of the model on some pads, or real problems; after the script the results could be unpredictable or worse. You can continue or cancel.</li>";
+    h += "<li>The script is generated and a summary is shown; confirm to execute it.</li>";
+    h += "<li>When the script ends the ULP starts again by itself, verifies the board, compares it with the baseline and with the plan and shows: violations before and after, new violations, ";
+    h += "segments not where planned, and the verdict OK or ATTENTION.</li></ol>";
+    h += "Files: <i>_verify_before.txt</i>, <i>_verify_after.txt</i>, <i>_baseline.txt</i>, <i>_plan.txt</i> and the script. The manual workflow below is for step by step use.";
+    h += "<hr>";
+    h += "<b>Manual workflow</b><ol>";
+    h += "<li>Save the board. Run the ULP with <i>Verify only</i> on the untouched board: this is the baseline (ideally 0 violations).</li>";
+    h += "<li>Run it again with <i>Verify only</i> off and <i>Run the script when done</i> off: it writes the script and the plan.</li>";
+    h += "<li>Execute the script (File - Execute Script), ideally on a copy of the board, or be ready to close the board without saving.</li>";
+    h += "<li>Run <i>Verify only</i> again, with the SAME output file name (it finds the plan). Expected: 0 violations and 0 differing segments.</li>";
+    h += "<li>Run the EAGLE DRC as the final check.</li></ol>";
+    h += "<hr>";
+    h += "<b>Nets to move</b><br>Exact names, comma separated, <i>*</i> = all. Examples: <i>*</i> (whole board); <i>GND, +5V</i> (only these two); ";
+    h += "<i>A0, A1, A2, A3</i> (a bus). All other tracks stay in place but are still obstacles. Tip: try one net first.";
+    h += "<hr>";
+    h += "<b>Parameters</b><ul>";
+    h += "<li><b>Safety margin</b> (0.02 mm): extra room kept above the DRU requirement. 0 = track may reach the DRU limit.</li>";
+    h += "<li><b>Max side gap</b> (1.5 mm): a segment is processed only if it has an obstacle on both sides within this distance (edge to edge). ";
+    h += "0.8 = only tight corridors; 3 = also wide ones.</li>";
+    h += "<li><b>Min shift</b> (0.02 mm): smaller moves are skipped. 0.1 = shorter script, only worthwhile moves.</li>";
+    h += "<li><b>Min segment length</b> (0.5 mm): shorter segments (small bends) are skipped.</li>";
+    h += "<li><b>Max passes</b> (10): each pass re-centers every track between its neighbors; several tracks in one corridor need several passes to become evenly spaced. ";
+    h += "2 = quick test; 20-30 = dense bus. It stops early when nothing moves any more.</li>";
+    h += "<li><b>Zoom half-size</b> (0.05 mm): before each MOVE the view is zoomed on the vertex so that EAGLE picks the right wire. ";
+    h += "0 = no zoom (faster, but it may pick the wrong object). Do not go above about 0.2.</li></ul>";
+    h += "<hr>";
+    h += "<b>Obstacle mode</b><br>EAGLE can push or walk around tracks while something is moved. The script sets it to <i>Ignore</i> at the start, so that only the planned vertices move, ";
+    h += "and sets it again at the end. Your choice is the mode you find AFTER the script:<ul>";
+    h += "<li><b>Ignore</b>: you are left in Ignore.</li>";
+    h += "<li><b>Walkaround</b> / <b>Push</b>: the mode is restored to that one. Pick the one you normally route with.</li>";
+    h += "<li><b>Do not touch</b>: no SET command at all, the current mode stays active during the moves (not validated: with Push active other tracks may be pushed).</li></ul>";
+    h += "Validated runs used Ignore during the script.";
+    h += "<hr>";
+    h += "<b>Options</b><ul>";
+    h += "<li><b>Automate</b>: runs the whole workflow described above. When it is on, <i>Run the script when done</i> and <i>Verify only</i> are ignored.</li>";
+    h += "<li><b>Run the script when done</b>: off = only the .scr file is written, you can read it and run it yourself. On = it is executed immediately and the board is modified. ";
+    h += "First time: off. To revert: close without saving, or many UNDO steps.</li>";
+    h += "<li><b>SMD pads: bounding circle</b>: off (default) = SMDs are real rectangles with their rotation and rounded corners. ";
+    h += "On = each SMD is the circle that contains it: safer on odd rotations, but it blocks many corridors on fine-pitch parts. Verify always uses the real shapes.</li>";
+    h += "<li><b>Verify only</b>: no script. Checks the board as it is now and writes <i>_verify.txt</i>. If a plan file exists, it also compares the board with it.</li></ul>";
+    h += "<hr>";
+    h += "<b>Reading the Verify report</b><ul>";
+    h += "<li><i>L1 net X vs pad/smd of net Y gap=0.1275 required=0.1524 at (6.8, -15.8)</i>: layer 1, a segment of X is closer than the DRU allows to a pad of Y, near that point. ";
+    h += "<i>OVERLAP</i> = gap below 0: copper touching.</li>";
+    h += "<li><i>Plan check: 376 matching, 7 differing</i>: segments that are not where the plan expects them.</li>";
+    h += "<li><i>UNPLANNED CHANGE</i>: a segment moved although the script did not mean to move it.</li>";
+    h += "<li>If the DRC of EAGLE is clean on the original board but Verify reports violations there, the model is stricter than the DRC for those pads: they are not caused by the script.</li></ul>";
+    h += "<hr>";
+    h += "<b>Which segments are moved</b><br>Straight, with both ends plain bends with one straight neighbor (no pad, via or junction), not drawn with ShortDash style (that style protects a wire). ";
+    h += "Neighbors keep their angles: their ends slide along their own lines. Polygons are not considered (EAGLE recalculates them). Arcs are obstacles only. ";
+    h += "The board outline, copper rectangles/circles/texts and copper inside packages are obstacles.";
+    h += "<hr>";
+    h += "<b>Why a track may stay where it is</b><ul>";
+    h += "<li>An end is on a pad or via of its own net: that end cannot move, and moving only the other end would change the angle of the track.</li>";
+    h += "<li>The ends are not plain bends (free end, junction, loop) or a neighbor is an arc.</li>";
+    h += "<li>A long straight segment is moved as a whole, so the tightest spot along its entire length limits the shift: a track that crosses several corridors ";
+    h += "cannot be centered in one of them if another point of the same segment has no room. Splitting a track into jogs is not done.</li>";
+    h += "<li>Less than <i>Min shift</i> to gain, or no obstacle on both sides within <i>Max side gap</i>.</li></ul>";
+    h += "The file <i>_skipped.txt</i> gives the exact reason for every segment of the selected nets: select a single net to read it easily.";
+    h += "<hr>";
+    h += "<b>Files written next to the script</b><ul>";
+    h += "<li><i>name_skipped.txt</i>: for each segment that was not moved, the reason and its coordinates.</li>";
+    h += "<li><i>name.scr</i>: the MOVE commands (zoom, then MOVE, grouped per layer).</li>";
+    h += "<li><i>name_plan.txt</i>: every signal segment as it should be after the script.</li>";
+    h += "<li><i>name_verify.txt</i>: the report of Verify.</li></ul>";
+    h += "EAGLE own Push Obstacles mode moves tracks while you route a new one; this ULP is complementary: it re-centers tracks that are already routed.";
+    dlgDialog("Center tracks - Help") {
+        dlgHBoxLayout { dlgSpacing(620); }
+        dlgHBoxLayout {
+            dlgVBoxLayout { dlgSpacing(460); }
+            dlgTextView(h);
+        }
+        dlgHBoxLayout {
+            dlgStretch(1);
+            dlgPushButton("+Close") dlgAccept();
+        }
+    };
+}
+int show_options(void) {
+    string sig_names[];
+    int n = 0, sel = 0, result;
+    board(B) {
+        B.signals(S) sig_names[n++] = S.name;
+    }
+    if (n > 1) sort(n, sig_names);
+    result = dlgDialog("Center tracks between pads, vias and tracks") {
+        dlgLabel("<b>Save the board before proceeding: the design rules are read from the .brd file.</b>");
+        dlgHBoxLayout {
+            dlgGroup("Signals") {
+                dlgListBox(sig_names, sel);
+            }
+            dlgGroup("Nets to move (comma separated, * = all)") {
+                dlgHBoxLayout {
+                    dlgStringEdit(net_list);
+                    dlgPushButton("Add") { if (n) net_list = add_sig(net_list, sig_names[sel]); dlgRedisplay(); }
+                    dlgPushButton("All") { net_list = "*"; dlgRedisplay(); }
+                    dlgPushButton("Clear") { net_list = ""; dlgRedisplay(); }
+                }
+            }
+        }
+        dlgGroup("Parameters") {
+            dlgGridLayout {
+                dlgCell(0, 0) dlgLabel("Safety margin (mm):");
+                dlgCell(0, 1) dlgRealEdit(safety_mm, 0.0, 5.0);
+                dlgCell(1, 0) dlgLabel("Max side gap (mm):");
+                dlgCell(1, 1) dlgRealEdit(max_gap_mm, 0.05, 50.0);
+                dlgCell(2, 0) dlgLabel("Min shift (mm):");
+                dlgCell(2, 1) dlgRealEdit(min_shift_mm, 0.001, 5.0);
+                dlgCell(3, 0) dlgLabel("Min segment length (mm):");
+                dlgCell(3, 1) dlgRealEdit(min_seg_mm, 0.05, 100.0);
+                dlgCell(4, 0) dlgLabel("Max passes:");
+                dlgCell(4, 1) dlgIntEdit(max_passes, 1, 100);
+                dlgCell(5, 0) dlgLabel("Zoom half-size before MOVE (mm, 0 = off):");
+                dlgCell(5, 1) dlgRealEdit(pick_half_mm, 0.0, 5.0);
+            }
+        }
+        dlgGroup("Output script") {
+            dlgHBoxLayout {
+                dlgStringEdit(out_file);
+                dlgPushButton("Browse...") {
+                    string f = dlgFileSave("Save script file", out_file, "*.scr");
+                    if (f != "") out_file = f;
+                    dlgRedisplay();
+                }
+            }
+        }
+        dlgGroup("Obstacle mode after the script (during it EAGLE is always set to Ignore, except Do not touch)") {
+            dlgHBoxLayout {
+                dlgRadioButton("Ignore", restore_mode);
+                dlgRadioButton("Walkaround", restore_mode);
+                dlgRadioButton("Push", restore_mode);
+                dlgRadioButton("Do not touch", restore_mode);
+            }
+        }
+        dlgCheckBox("Automate: verify, generate the script, execute it, verify again and compare (recommended)", automate);
+        dlgCheckBox("Run the script when done", run_now);
+        dlgCheckBox("SMD pads: bounding circle for moves (safer, skips more; Verify always uses real shapes)", smd_guard);
+        dlgCheckBox("Verify only: check the current board and write a report (no script)", verify_mode);
+        dlgHBoxLayout {
+            dlgPushButton("Help") show_help();
+            dlgStretch(1);
+            dlgPushButton("+Start") {
+                if (out_file == "") dlgMessageBox("!Please specify the output script file (it is also used to find the plan in Verify mode).");
+                else dlgAccept();
+            }
+            dlgPushButton("-Cancel") dlgReject();
+        }
+    };
+    return result;
+}
 
-1. Open a **copy** of the board and save it.
-2. Run the ULP, leave **Automate** checked, and choose an output script file name.
-3. The ULP verifies the board first (baseline). The original board should have 0 violations; otherwise you get a warning.
-4. A summary of the script is shown. Confirm to execute it.
-5. When the script ends, the ULP starts again by itself, verifies the board, and compares the result with the baseline and the plan. The final verdict is `OK` or `ATTENTION`.
-6. Run the EAGLE DRC as the final check.
-
-Tip: try a single net first (type its name in *Nets to move*), then the whole board.
-
-## Manual workflow
-
-For step by step use:
-
-1. Save the board. Run the ULP with **Verify only** on the untouched board: this is the baseline (ideally 0 violations).
-2. Run it again with **Verify only** off and **Run the script when done** off: it writes the script and the plan.
-3. Execute the script (`File > Execute Script...`).
-4. Run **Verify only** again with the **same output file name** (so that it finds the plan). Expected: 0 violations and 0 differing segments.
-5. Run the EAGLE DRC.
-
-## Parameters
-
-| Parameter | Default | Description |
-|---|---|---|
-| Nets to move | `*` | Exact net names, comma separated, `*` = all. Other tracks stay in place but are still obstacles. |
-| Safety margin | 0.02 mm | Extra room kept above the DRU requirement. 0 = the track may reach the DRU limit. |
-| Max side gap | 1.5 mm | A segment is processed only if it has an obstacle on both sides within this distance (edge to edge). 0.8 = only tight corridors, 3 = also wide ones. |
-| Min shift | 0.02 mm | Smaller moves are skipped. 0.1 = shorter script, only worthwhile moves. |
-| Min segment length | 0.5 mm | Shorter segments (small bends) are skipped. |
-| Max passes | 10 | Number of calculation passes. 2 = quick test, 20-30 = dense bus. It stops early when nothing moves any more. |
-| Zoom half-size | 0.05 mm | Before each `MOVE` the view is zoomed on the vertex so that EAGLE picks the right wire. 0 = no zoom (faster, but it may pick the wrong object). Do not go above about 0.2. |
-
-### Options
-
-| Option | Description |
-|---|---|
-| Automate | Whole workflow described in [Quick start](#quick-start-recommended). When on, *Run the script when done* and *Verify only* are ignored. |
-| Run the script when done | Off = only the `.scr` file is written, so you can read it and run it yourself. On = it is executed immediately and the board is modified. |
-| SMD pads: bounding circle | Off (default) = SMDs are real rectangles with rotation and rounded corners. On = each SMD is modeled as the circle that contains it: safer on odd rotations, but it blocks many corridors on fine-pitch parts. The verifier always uses the real shapes. |
-| Verify only | No script is generated. The current board is checked and a report is written. If a plan file exists, the board is also compared with it. |
-
-### Obstacle mode
-
-EAGLE can push or walk around tracks while something is moved. The script sets the obstacle mode to **Ignore** at the start, so that only the planned vertices move, and sets it again at the end. The radio buttons select the mode you want to find **after** the script:
-
-- **Ignore**: you are left in Ignore.
-- **Walkaround** / **Push**: the mode is restored to that one. Pick the one you normally route with.
-- **Do not touch**: no `SET` command at all. The current mode stays active during the moves. This is not validated: with Push active other tracks may be pushed.
-
-Validated runs used Ignore during the script.
-
-## Output files
-
-All files are written next to the script, using its name as base:
-
-| File | Content |
-|---|---|
-| `name.scr` | The `MOVE` commands (zoom, then `MOVE`), grouped per layer. |
-| `name_plan.txt` | Every signal segment as it should be after the script. |
-| `name_skipped.txt` | For each segment that was not moved, the reason and its coordinates. Select a single net to read it easily. |
-| `name_verify.txt` | Report of *Verify only*. |
-| `name_verify_before.txt`, `name_baseline.txt`, `name_verify_after.txt` | Reports of the automated workflow. |
-
-## Reading the verify report
-
-```
-L1 net X vs pad/smd of net Y gap=0.1275 required=0.1524 at (6.8, -15.8)
-```
-
-On layer 1, a segment of net `X` is closer than the DRU allows to a pad of net `Y`, near that point. `OVERLAP` means gap below 0: copper touching.
-
-```
-Plan check: 376 matching, 7 differing
-```
-
-Segments that are not where the plan expects them. `UNPLANNED CHANGE` marks a segment that moved although the script did not mean to move it.
-
-If the EAGLE DRC is clean on the original board but the verifier reports violations there, the model is stricter than the DRC for those pads (typically SMD pads with rounded corners): they are not caused by the script.
-
-## Which segments are moved
-
-A segment is moved when:
-
-- it is straight, and both its ends are plain bends with exactly one straight neighbor (no pad, via, junction or free end);
-- it is not drawn with the `ShortDash` style (that style protects a wire);
-- it has an obstacle on both sides within *Max side gap*;
-- the shift is at least *Min shift* and keeps every clearance of the DRU.
-
-Neighbor segments keep their angles: their ends slide along their own lines.
-
-### Why a track may stay where it is
-
-- One end is on a pad or via of its own net: that end cannot move, and moving only the other end would change the angle of the track.
-- The ends are not plain bends (free end, junction, loop), or a neighbor is an arc.
-- A long straight segment is moved as a whole, so the tightest spot along its entire length limits the shift. Splitting a track into jogs is not done.
-- Less than *Min shift* to gain, or no obstacle on both sides within *Max side gap*.
-
-Use `name_skipped.txt` to see the exact reason for every segment.
-
-## Limitations
-
-- Polygons (copper pours) are not considered: EAGLE recalculates them. The script ends with `RATSNEST;`.
-- Arcs are used as obstacles only; they are never moved.
-- Segments are shifted as a whole; no jogs are added.
-- The model can be stricter than the EAGLE DRC on some pads, so the verifier may report violations that the DRC does not.
-- Use of the Walkaround/Push obstacle mode during the moves is not validated.
-- The result is not guaranteed to be perfect: always review the reports and run the DRC.
-
-## How it works
-
-1. Reads the board: wires, pads, SMDs, vias, holes, outline, net classes and the DRU.
-2. Finds the candidate segments and the obstacles near each of them.
-3. For each candidate, computes the free space on both sides and the shift that equalizes the two gaps, limited by the tightest obstacle along the segment.
-4. Checks that the new positions of the segment and of its two neighbors keep every required clearance.
-5. Repeats for several passes, updating the simulated positions after every move.
-6. Writes the `MOVE` commands, preceded by the grid and obstacle mode setup, and the expected result.
-
-## Contributing
-
-Issues and pull requests are welcome. When reporting a problem, please attach the `.scr`, `_plan.txt` and `_verify*.txt` files, and describe the DRC error that you see.
+// ---------------------------------------------------------------------------
+// Main
+// ---------------------------------------------------------------------------
+if (!board) ERROR("No board, run this ULP in a Board window!");
+board(B) out_file = filesetext(B.name, "_center_tracks.scr");
+if (argc > 2 && argv[1] == "AFTER") {
+    // Second phase of the automatic run, started by the last line of the generated script
+    out_file = argv[2];
+    read_dru();
+    dru_wp = dru_mm("mdWirePad", 0.2);
+    dru_wv = dru_mm("mdWireVia", 0.2);
+    dru_ww = dru_mm("mdWireWire", 0.2);
+    dru_cd = dru_mm("mdCopperDimension", 0.4);
+    smd_guard = 0;
+    collect_data();
+    finish_automation();
+    exit(0);
+}
+read_dru();
+dru_wp = dru_mm("mdWirePad", 0.2);
+dru_wv = dru_mm("mdWireVia", 0.2);
+dru_ww = dru_mm("mdWireWire", 0.2);
+dru_cd = dru_mm("mdCopperDimension", 0.4);
+if (!show_options()) exit(0);
+if (automate) { verify_mode = 0; run_now = 0; }
+int guard_user = smd_guard;
+if (verify_mode || automate) smd_guard = 0;   // the checks must use the real pad shapes, not the conservative circles
+collect_data();
+if (verify_mode) { verify_board(1, filesetext(out_file, "_verify.txt"), 0); exit(0); }
+if (automate) {
+    // Baseline: the board before any change
+    verify_board(0, filesetext(out_file, "_verify_before.txt"), 1);
+    output(filesetext(out_file, "_baseline.txt"), "wt") printf("violations\t%d\t%d\n%s", v_count, v_over, v_keys);
+    if (v_count > 0) {
+        string wm;
+        sprintf(wm, "The board has %d violation(s), %d of them overlaps, BEFORE the script.\n\nThe EAGLE DRC should be 0 on the original board: either these are false positives of the model on some pads (compare with the DRC), or real problems.\nAfter the script the results could be unpredictable or worse.\n\nReport: %s\n\nContinue anyway?",
+                v_count, v_over, filesetext(out_file, "_verify_before.txt"));
+        if (dlgMessageBox("!" + wm, "&Continue anyway", "&Cancel") == 1) exit(0);
+    }
+    smd_guard = guard_user;
+    if (guard_user) collect_data();   // again, with the pad model chosen for the moves
+}
+build_candidates();
+string vis = "";   // layers visible now, restored at the end of the script
+board(B) {
+    B.layers(L) {
+        if (L.visible) {
+            string vt;
+            sprintf(vt, " %d", L.number);
+            vis += vt;
+        }
+    }
+}
+script = "# Generated by center_tracks.ulp - run on a copy of the board, UNDO reverts the moves\n";
+if (restore_mode != 3) {
+    script += "# EAGLE must not push or walk around other tracks while a vertex is moved:\n";
+    script += "SET OBSTACLE_MODE IGNORE;\n";
+}
+script += "GRID FINEST;\n";
+int total = 0, passes_done = 0;
+for (int pn = 0; pn < max_passes; pn++) {
+    int moved_pass = 0;
+    cur_pass = pn;
+    for (int si = 0; si < nsig; si++) {
+        if (net_sel[si]) moved_pass += process_net(si);
+    }
+    if (!moved_pass) break;
+    total += moved_pass;
+    passes_done++;
+}
+// Moves grouped by layer: only that layer is displayed while its vertices are picked
+for (int ly = 1; ly <= 16; ly++) {
+    if (lscript[ly] == "") continue;
+    string dl2;
+    sprintf(dl2, "DISPLAY NONE %d;\n", ly);
+    script += dl2 + lscript[ly];
+}
+if (total > 0) {
+    if (vis == "") script += "DISPLAY ALL;\n";
+    else script += "DISPLAY NONE" + vis + ";\n";
+    script += "WINDOW FIT;\n";
+}
+script += "RATSNEST;\n";   // recalculates polygons and ratsnest after the moves
+string om = "PUSH";
+if (restore_mode == 0) om = "IGNORE";
+if (restore_mode == 1) om = "WALKAROUND";
+if (restore_mode != 3) script += "SET OBSTACLE_MODE " + om + ";\n";
+script += "GRID LAST;\n";
+if (automate && total > 0) script += "RUN '" + fwd(argv[0]) + "' AFTER '" + fwd(out_file) + "';\n";   // second phase: verify and compare
+output(out_file, "wt") printf("%s", script);
+output(filesetext(out_file, "_skipped.txt"), "wt") printf("Segments of the selected nets that are not moved (first pass), with the reason\n%d entries (at most 4000)\n\n%s", skip_n, skip_rep);
+// Plan file: every signal segment in its expected final position, with a flag for the ones planned to move (used by Verify)
+string plan = "";
+for (int ps = 0; ps < nw; ps++) {
+    if (snet[ps] < 0 || stopo[ps]) continue;
+    string pl;
+    sprintf(pl, "%d\t%s\t%f\t%f\t%f\t%f\t%d\n", slay[ps], sig_name[snet[ps]], sx1[ps], sy1[ps], sx2[ps], sy2[ps], smoved[ps]);
+    plan += pl;
+}
+output(filesetext(out_file, "_plan.txt"), "wt") printf("%s", plan);
+string msg;
+sprintf(msg, "%d segment shift(s) in %d pass(es).\nScript written to:\n%s\nWires: %d, candidate segments: %d\nSkipped in first pass: short %d, obstacle on centerline %d, no obstacle on both sides %d, overlap or no feasible shift %d, shift too small %d, geometry %d, no clearance after move %d",
+        total, passes_done, out_file, nw, cand_n, st_cnt[0], st_cnt[1], st_cnt[2], st_cnt[3], st_cnt[4], st_cnt[5], st_cnt[6]);
+msg += "\nReasons for the segments that were not moved: " + filesetext(out_file, "_skipped.txt");
+if (arc_bad) {
+    string am;
+    sprintf(am, "\nWarning: %d arc(s) could not be approximated and were treated as chords.", arc_bad);
+    msg += am;
+}
+if (automate) {
+    if (total == 0) { dlgMessageBox(":" + msg); exit(0); }   // nothing to move
+    if (dlgMessageBox(":" + msg + "\n\nExecute the script now? The result is verified automatically at the end.", "&Execute", "&Cancel") == 1) exit(0);
+    exit("SCRIPT '" + fwd(out_file) + "';");
+}
+dlgMessageBox(":" + msg);
+if (run_now && total) exit("SCRIPT '" + fwd(out_file) + "';");
