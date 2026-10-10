@@ -20,45 +20,15 @@
        "[<b>C</b>ircle] emulate/draw a cricle with wire or polygon <br>"
        "[<b>K</b>] number of polygon sides (with <b>O</b>): full circle/ellipse, replaces angle end/step; <br>"
        "angle start = position of the first vertex <br>"
+       "[<b>BH</b> | <b>BV</b>] with <b>K</b>: flat side parallel to the screen, horizontal | vertical <br>"
+       "(sets the angle start automatically) <br>"
        "[full ellipse <b>0</b>] <br>"
        "[Ellipse <b>f</b>actor] height = radius * f <br>"
        "[1/<b>4</b> ellipse] 90 degree, 1st quadrant <br>"
        "<br>"
        "Defaults: angle start 0, angle end 360. The end angle is excluded, except for wire/polygon. <br>"
-       "** If <b>MARK</b> is set in PAC/BRD/SCH editor, coordinates are relativ. <br>"
+       "** If <b>MARK</b> is set in PAC/BRD/SCH editor, coordinates are relative. <br>"
        "Parameters can be used in any order; not case sensitive."
-       "<p>"
-       "<author>Author:<b> Cadsoft</b></author></nobr></qt>",
-
-       "de: <qt><nobr>Command draw<p><u>Optionen</u>:<p>"
-       "<b>+</b> Distance/Radius <br>"
-       "St<b>a</b>rtwinkel [Wi<b>n</b>kelschritt oder A<b>n</b>zahl (# .)] [<b>E</b>ndwinkel] <br>"
-       "[<b>L</b>ayer] <br>"
-       "[<b>W</b>re width] setzt die Breite (width) und den Befehl WIRE. <br>"
-       "<i>Für Polygon muß <b>W</b> vor <b>O</b> angegeben werden.</i><br>"
-       "[<b>X</b>-Koordinate] [<b>Y</b>-Koordinate] **<br>"
-       "[P<b>o</b>lygon] <br>"
-       "[<b>P</b>ad || <b>S</b>md || <b>V</b>ia] <br>"
-       "[W<b>i</b>dth Leng<b>t</b>h] SMD_dx SMD_dy <br>"
-       "[<b>-</b>Name] Signal/Pad/Smd <br>"
-       "[<b>D</b>iameter] für Pad/Via, wenn benutzt <br>"
-       "[D<b>r</b>ill] für Pad/Via/Hole, wenn benutzt <br>"
-       "[<b>°</b>] Winkelschritt in Grad <br>"
-       "[<b>/</b>] berechnet den Winkel (End - Start / Anzahl <br>"
-       "[<b>G</b>roup] Pasted die Gruppe rotiert.<br>"
-       "Die Gruppe kann vor dem Start des ULP definiert werden,<br>"
-       "oder das ULP selektiert alle sichtbaren Objekte als Gruppe.<br>"
-       "[Rotate <b>m</b>atch] dreht die Bauteile/Pad/Smd im selben Winkel <br>in dem sie angeordnet werden<br>"
-       "[<b>MOVE</b>] plaziert Elemente aufsteigend beginnend mit dem <br>angegebenen Namen (<i>nur im Board nutzbar</i> ) <br>"
-       "[<b>C</b>ircle] zeichnet einen Kreis oder Ellipse als Wire oder Polygon <br>je nach Option (W/O) <br>"
-       "[<b>K</b>anten] Anzahl der Polygonecken (mit <b>O</b>): voller Kreis/Ellipse, ersetzt Endwinkel/Schritt; <br>"
-       "Startwinkel = Position der ersten Ecke <br>"
-       "[full ellipse <b>0</b>] zeichnet eine volle Ellipse <br>"
-       "[Ellipse <b>f</b>aktor] der Wert mit dem die Länge multipliziert wird <br>(Raduis * f) ergibt die Länge in y <br>"
-       "[1/<b>4</b> ellipse] zeichnet nur den ersten Qudranten <br>einer Ellipse oder Kreises <br>"
-       "<br>"
-       "** Ist <b>MARK</b> im benutzten PAC/BRD/SCH Editor gesezt, <br>werden die Koordinaten relativ zur Marke benutzt.<br>"
-       "Die Parameter können in beliebiger Reihenfolge angegeben <br>und groß oder klein geschrieben werden."
        "<p>"
        "<author>Author:<b> Cadsoft</b></author></nobr></qt>"
 
@@ -82,6 +52,7 @@ string Help = "<nobr>" +
        "RUN cmd-draw g n33.333 # A0.0 e359.9 <br>" +
        "RUN cmd-draw G n33.333 . A0.0 e359.9 <br>" +
        "RUN cmd-draw w0.2 -gnd x30 y4 +25.4 o c k60 l1 <br>" +
+       "RUN cmd-draw w0.2 -gnd x30 y4 +25.4 o c k8 bh l1 <br>" +
        "RUN cmd-draw +10 MOVE -R1 M a33 L16 N7 E322 .<br>"+
        "<p>" +
        "</nobr>";
@@ -95,18 +66,7 @@ string Help_Move = "<qt>MOVE, PAD, SMD can be used clockwise, too. " +
                    "<b>Angle end</b> for negative <b>Angle step</b>, 360° will be added to <b>Angle start</b>." +
                    "Thus you are allowed to arrange elements clockwise.</qt>";
 
-string Mark_Info = "<nobr>If <font color=\"blue\"><b>MARK</b></font> is set coordinates are <b>relativ</b>.</nobr>";
-
-
-if (language() == "de") {
-  Help_Move = "MOVE, PAD, SMD können auch rechtsdrehend benutzt werden. " +
-              "Dazu muß <b>Angle step</b> negativ sein.<br>" +
-              "Ist <b>Angle start</b> bei <i>negativen</i> <b>Angle step</b> " +
-              "kleiner als <b>Angle end</b> wird auf <b>Angle start</b> 360° aufaddiert.<br>" +
-              "Damit ist es möglich die Elemente rechtsdrehen anzuordnen.";
-
-  Mark_Info = "<nobr>Ist <font color=\"blue\"><b>MARK</b></font> gesetzt, dann sind die Koordinaten relativ zu der Marke.</nobr>";
-}
+string Mark_Info = "<nobr>If <font color=\"blue\"><b>MARK</b></font> is set coordinates are <b>relative</b>.</nobr>";
 
 
 //define image URLs as strings
@@ -117,30 +77,40 @@ string Label_Move = " ";
 
 int test = 1;
 
-string Version = " Version 2.01 ";  // 2006-08-10 alf@cadsoft.de
+string Version = " Version 2.2 ";  // 2006-08-10 alf@cadsoft.de
                                     // 2008-04-10 changed GROUP ... (>x y); alf@cadsoft.de
-                                    // 2008-05-06 SMD generierung mit Name berichtigt
-                                    // 2010-06-09 Generierung des PAD-Namen berichtigt.
-                                    // 2010-10-15 Startwinkel auf 720 erhöht, um Bauteile
-                                    //            im Uhrzeigersinn mit größerem Endwinkel
-                                    //            als 0.0 zu platzieren.
-                                    //            Beispiel Start 620.0° End 260.1°
-                                    //            Hier muß der Startwinkel 260+360 = 620° sein.
-                                    //            Neue Option: Winkeloffset
-                                    // 2011-10-21 Option Group akzeptiert jetzt auch Radius = 0.
-                                    //            die Gruppe wird jetzt gedreht gapastetd.
-                                    //            Checkbox use selected, es wird die vor dem Start des ULP
-                                    //            definirte Gruppe benutzt, oder das ULP definiert alle
-                                    //            sichtbaren Objekte als Gruppe.
-                                    // 2012-04-12 min max Wert absolut und nicht mehr in Eagle-Internen Einheiten
-                                    //            wegen der höheren Auflösung von V6
-                                    // 2013-03-26 Auflösung und max. Werte an V6 und feinere Auflösung angepasst.
-                                    // 2013-08-05 Shape von VIA ausgeben, HOLE berichtigt.
-                                    // 2013-12-12 In #usage Zeilenumbruch <br> eingefügt.
+                                    // 2008-05-06 fixed SMD generation with name
+                                    // 2010-06-09 fixed PAD name generation.
+                                    // 2010-10-15 angle start raised to 720 to place elements
+                                    //            clockwise with an end angle larger than 0.0.
+                                    //            Example: start 620.0 deg, end 260.1 deg.
+                                    //            Here the start angle must be 260+360 = 620 deg.
+                                    //            New option: angle offset
+                                    // 2011-10-21 Option Group now also accepts radius = 0.
+                                    //            The group is now pasted rotated.
+                                    //            Checkbox "use selected": uses the group defined
+                                    //            before the ULP is started, or the ULP selects all
+                                    //            visible objects as the group.
+                                    // 2012-04-12 min/max values are absolute and no longer in EAGLE
+                                    //            internal units, because of the higher V6 resolution
+                                    // 2013-03-26 resolution and max. values adapted to V6 and finer resolution.
+                                    // 2013-08-05 output the shape for VIA, fixed HOLE.
+                                    // 2013-12-12 added line break <br> in #usage.
                                     // 2026-10-10 EAGLE 9.6.2 adaptation: POLYGON instead of ppour, local .bmp images,
                                     //            SMD clockwise fix, rotate offset for MOVE/SMD, shape/label/error fixes,
                                     //            # and . accepted as step symbols, help notes added.
                                     // 2026-10-10 New: polygon by number of sides (dialog field / parameter K).
+                                    // 2026-10-10 Version 2.1: polygon alignment (dialog combo / parameters BH, BV).
+                                    // 2026-10-10 Version 2.2: all German text removed (English only); no signal
+                                    //            prompt for polygons (signal field removed from the dialog);
+                                    //            layer 20 (Dimension) handled for polygons (see below);
+                                    //            missing ellipse factor reported inside the dialog.
+                                    //            On layer 20 (Dimension) the polygon shape is drawn as a closed WIRE
+                                    //            outline (board edge) instead of POLYGON.
+                                    //            Layer is mandatory for polygons (active editor layer cannot be read by a ULP).
+                                    //            Layer field replaced by a pulldown of all layers with the editor color swatch.
+                                    //            Radius/Distance label and error messages follow the draw type.
+                                    //            Fixed endless loop (EAGLE hang) for polygon with Angle step not used/zero/negative.
 
 enum { DrawWIRE,             // ** do not change this list  **
        DrawPOLYGON,
@@ -179,6 +149,8 @@ int    AngleStepTyp   = None;        // flag to calculate the anglestep from cou
 int    RotateMatch    = 0;           // rotate element with same angle with rotate
 int    UseMarkedGroup = 0;
 int    Sides          = 0;           // polygon by number of sides (0 = use angle start/end/step)
+int    Align          = 0;           // polygon alignment: 0 = use angle start, 1 = flat side horizontal, 2 = flat side vertical
+string AlignText[]    = { "None (use angle start)", "Flat side horizontal", "Flat side vertical" };
 
 enum { NONE, CIRCLE, FULL_ELLIPSE, ELLIPSE_4 };
 int    Placeform      = NONE;
@@ -195,6 +167,12 @@ string Shapes[];
 int    ShapeSelect    = PAD_SHAPE_OFFSET+1;
 
 string Drill_Hole     = "";          // drill diameter
+
+string LayerText[];                  // layer pulldown entries, index 0 = no layer
+int    LayerNumber[];
+int    LayerRGB[];                   // layer color from the editor palette (0x00rrggbb)
+int    LayerCount     = 0;
+int    LayerSel       = 0;           // selected pulldown entry (0 = keep the current editor layer)
 
 int grid = 1;
 string GridUnit[] = { "MIC", "MM", "MIL", "INCH" };
@@ -263,8 +241,7 @@ void info(void) {
     dlgHBoxLayout {
       dlgLabel(usage);
       dlgVBoxLayout {
-        if (language() == "de")  dlgLabel("<u>Beispiele</u>:");
-        else dlgLabel("<u>Examples</u>:");
+        dlgLabel("<u>Examples</u>:");
         dlgLabel(Help);
         dlgStretch(1);
         dlgHBoxLayout {
@@ -276,6 +253,62 @@ void info(void) {
     }
   };
   return;
+}
+
+
+// ### layer pulldown ###
+void addLayerEntry(int number, string name, int color) {
+  string e;
+  LayerCount++;
+  sprintf(e, "%3d  %s", number, name);
+  LayerText[LayerCount]   = e;
+  LayerNumber[LayerCount] = number;
+  LayerRGB[LayerCount]    = palette(color);   // color as currently shown in the editor
+  return;
+}
+
+// fill the pulldown with the layers of the current editor
+void loadLayers(void) {
+  LayerText[0]   = "(none - keep current layer)";
+  LayerNumber[0] = 0;
+  LayerRGB[0]    = 0;
+  LayerCount     = 0;
+  // inner copper layers 2..15 are listed only if the board really uses them
+  if (board) board(B) B.layers(Ly) {
+    if (Ly.name && (Ly.number < 2 || Ly.number > 15 || Ly.used)) addLayerEntry(Ly.number, Ly.name, Ly.color);
+  }
+  if (schematic) schematic(S) S.layers(Ly) {
+    if (Ly.name) addLayerEntry(Ly.number, Ly.name, Ly.color);
+  }
+  if (library) library(LB) LB.layers(Ly) {
+    if (Ly.name) addLayerEntry(Ly.number, Ly.name, Ly.color);
+  }
+  return;
+}
+
+// pulldown selection -> layer string used by the script
+void syncLayer(void) {
+  if (LayerSel > 0) sprintf(layer, "%d", LayerNumber[LayerSel]);
+  else              layer = "";
+  return;
+}
+
+// layer 20 (Dimension) accepts only wires, never polygons
+int isDimensionLayer(string l) {
+  string u = strupr(l);
+  return (u == "20" || u == "DIMENSION");
+}
+
+
+// the length field (x2) is a radius for Wire/Polygon/Move, but the distance from the
+// center to the placed element for Pad/Smd/Via/Hole (= radius of the placement circle)
+int usesDistance(void) {
+  return (DrawType == DrawPAD || DrawType == DrawSMD || DrawType == DrawHOLE || DrawType == DrawGROUP);
+}
+
+string lengthName(void) {
+  if (usesDistance()) return "Distance";
+  return "Radius";
 }
 
 
@@ -291,8 +324,15 @@ int error(void) {
     }
     return 0;
   }
-  if (strtod(width) >= x2) { Help_Err = "Width > Radius";  err = -1; }
-  if (!x2) { Help_Err = "Radius = 0"; err = -1; }
+  // width is only used (and shown) for Wire and Polygon
+  if ((DrawType == DrawWIRE || DrawType == DrawPOLYGON) && strtod(width) >= x2) {
+    Help_Err = "Width > " + lengthName();  err = -1;
+  }
+  if (!x2) {
+    Help_Err = lengthName() + " = 0";
+    if (usesDistance()) Help_Err += " (distance from the center X/Y to the placed element)";
+    err = -1;
+  }
     if (DrawType == DrawSMD) {
     if (layer == "1" || layer == "16") ;
     else { err = -1; Help_Err = "Layer for SMD ?"; }
@@ -300,9 +340,20 @@ int error(void) {
   if (DrawType == DrawMOVE) {
     if (!SigName) { Help_Err = "1.st Element name ?"; err = -1; }
   }
+  if (DrawType == DrawPOLYGON) {
+    // a ULP cannot read the active editor layer, so the layer must be given explicitly
+    if (!layer) { err = -1; Help_Err = "Select the Layer for the Polygon (20 Dimension = board outline)"; }
+    if ((Placeform == FULL_ELLIPSE || Placeform == ELLIPSE_4) && EllipsFactor == 1.0) {
+      err = -1; Help_Err = "Ellipse factor missing: set a value other than 1.0";
+    }
+  }
+  if (DrawType == DrawPOLYGON && Align && Sides <= 0) { err = -1; Help_Err = "Align needs Polygon sides"; }
   if (DrawType == DrawPOLYGON && Sides > 0) {   // number of sides replaces angle step/end
     if (Sides < 3)                { err = -1; Help_Err = "Sides must be at least 3"; }
     if (Placeform == ELLIPSE_4)   { err = -1; Help_Err = "Sides: not usable with 1/4 ellipse"; }
+  }
+  else if (DrawType == DrawPOLYGON && AngleStep <= 0) {
+    err = -1; Help_Err = "Polygon needs an Angle step type (degree or calc.) with a positive Angle step, or Polygon sides";
   }
   else if (AngleStepTyp && AngleStep == 0) {
     err = -1; Help_Err = "Missing parameter: Angle step";
@@ -544,7 +595,7 @@ void set_Draw_Info(void) {
 
   else if(DrawType == DrawMOVE) {
     if (library || schematic) {
-      dlgMessageBox("! MOVE\nYou can use this function ponly in a Board.", "OK");
+      dlgMessageBox("! MOVE\nYou can use this function only in a Board.", "OK");
     }
     else {
       Label_Move = Help_Move;
@@ -792,10 +843,10 @@ void set_Draw_Info(void) {
 // ****** main menu ******
 int menue(void) {
   int RESULT;
-  if (Placeform == NONE) {
-    if (DrawType == DrawGROUP) Length_Distance_Radius = " not used "; // 2012-04-12
-    else Length_Distance_Radius = "&+ radius ";
-  }
+  // label always follows the draw type (radius or distance), not the order of the clicks
+  if (DrawType == DrawGROUP && Placeform == NONE) Length_Distance_Radius = " not used "; // 2012-04-12
+  else if (usesDistance())                         Length_Distance_Radius = "&+ distance ";
+  else                                             Length_Distance_Radius = "&+ radius ";
 
   Name1st = " ";
   NameExt = " ";
@@ -806,14 +857,6 @@ int menue(void) {
   if (board && DrawType == DrawWIRE) {
     Name1st = " &- Signal ";
     NameExt = " name";
-  }
-  if (board && DrawType == DrawPOLYGON) {
-    Name1st = " &- Signal ";
-    NameExt = " name";
-  }
-  if (library && DrawType == DrawPOLYGON) {
-    Name1st = " ";
-    NameExt = " ";
   }
   if (package && DrawType == DrawPAD) {
     Name1st = " &- 1st. Pad ";
@@ -831,9 +874,14 @@ int menue(void) {
     Name1st = " ";
     NameExt = " ";
   }
-  if ( schematic) {
+  if (schematic && DrawType != DrawPOLYGON) {
     Name1st = " &- Net name ";
     NameExt = " ";
+  }
+
+  string LayerSwatch = " ";
+  if (LayerSel > 0) {
+    sprintf(LayerSwatch, "<table border=1 cellpadding=0><tr><td bgcolor=\"#%06x\">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</td></tr></table>", LayerRGB[LayerSel]);
   }
 
   RESULT = dlgDialog("Command Draw") {
@@ -856,7 +904,8 @@ int menue(void) {
               }
               if (DrawType == DrawWIRE || DrawType == DrawPOLYGON || DrawType == DrawSMD || DrawType == DrawMOVE) {
                 dlgCell(  5, 5) dlgLabel(" &Layer");
-                dlgCell(  5, 6) dlgStringEdit(layer);
+                dlgCell(  5, 6) dlgComboBox(LayerText, LayerSel) { dlgAccept(); }   // redraw to update the color swatch
+                dlgCell(  5, 7) dlgLabel(LayerSwatch);
               }
 
               dlgCell(  5, 8) dlgLabel(Name1st, 1);
@@ -891,6 +940,9 @@ int menue(void) {
                 dlgCell( 10, 2) dlgLabel(" Polygon si&des ");
                 dlgCell( 10, 3) dlgIntEdit(Sides, 0, 100000);
                 dlgCell( 10, 5) dlgLabel(" 0 = use angles; if set, angle step/end are ignored ");
+                dlgCell( 11, 2) dlgLabel(" Ali&gn flat side ");
+                dlgCell( 11, 3) dlgComboBox(AlignText, Align);
+                dlgCell( 11, 5) dlgLabel(" parallel to the screen; overrides angle start ");
               }
 
 
@@ -967,7 +1019,7 @@ int menue(void) {
                 if (DrawType == DrawPAD) {
                   dlgCell( 13, 2) dlgLabel( " PAD &Diameter ");
                   dlgCell( 13, 3) dlgStringEdit( PAD_diameter);
-                  dlgCell( 13, 5) dlgLabel( " Schape ");
+                  dlgCell( 13, 5) dlgLabel( " Shape ");
                   dlgCell( 13, 6) dlgComboBox(Shapes, ShapeSelect);
                 }
                 dlgCell( 14, 0) dlgRadioButton("&Smd ", DrawType) {
@@ -1002,7 +1054,7 @@ int menue(void) {
                 if (DrawType == DrawPAD) {
                   dlgCell( 13, 2) dlgLabel( " VIA &Diameter ");
                   dlgCell( 13, 3) dlgStringEdit( PAD_diameter);
-                  dlgCell( 13, 5) dlgLabel( " Schape ");
+                  dlgCell( 13, 5) dlgLabel( " Shape ");
                   dlgCell( 13, 6) dlgComboBox(Shapes, ShapeSelect);
                 }
               }
@@ -1079,6 +1131,9 @@ int menue(void) {
         dlgStretch(1);
       }
       dlgLabel(Label_Move, 1);
+      if (DrawType == DrawPOLYGON) {
+        dlgLabel("<nobr><font color=\"blue\">Polygon: choose the Layer. On layer 20 (Dimension, wires only) a closed WIRE outline is drawn (uses Width).</font></nobr>", 1);
+      }
       dlgHBoxLayout {
         dlgLabel("<nobr><font color=\"red\">" + Help_Err + "</font><nobr>", 1);
         dlgStretch(1);
@@ -1139,8 +1194,8 @@ string wireEllipse(void) {
   real rad;
   string xystart;
   int    start = 1;
-  for (real winkel = StartAngle; winkel <= EndAngle; winkel += AngleStep) {
-    rad = PI / 180 * winkel;
+  for (real angle = StartAngle; angle <= EndAngle; angle += AngleStep) {
+    rad = PI / 180 * angle;
     sprintf(h, "(R%.9f %.9f)\n",
                     x1 + (cos(rad) * x2),
                     y1 + (sin(rad) * x2 * EllipsFactor) );
@@ -1218,33 +1273,43 @@ void drawPolygon(void) {
   if (library) SigName = "";
 
   if((Placeform == FULL_ELLIPSE || Placeform == ELLIPSE_4) && EllipsFactor == 1.0) {
-    dlgMessageBox("!Da fehlt der Ellipsfaktor", "OK");
+    dlgMessageBox("!Ellipse factor missing: set a value other than 1.0", "OK");
     exit(-2);
+  }
+  // layer 20 (Dimension) accepts only wires: draw the closed outline with WIRE instead of POLYGON
+  if (!layer) {
+    dlgMessageBox("!Layer required for Polygon (the active editor layer cannot be read).\nUse the L parameter, e.g. L20", "OK");
+    exit(-2);
+  }
+  string DrawCmd = "POLYGON";
+  if (isDimensionLayer(layer)) {
+    DrawCmd = "WIRE";
+    SigName = "";
   }
   string ecmd;
 
   if (AngleStepTyp) {
     switch(Placeform) {
       case NONE         :
-                          sprintf(ecmd, "POLYGON %s %s ", width, SigName );
+                          sprintf(ecmd, "%s %s %s ", DrawCmd, width, SigName );
                           s += ecmd;
                           s += wireEllipse();
                           s += ";\n";   // FIX: terminate the command
                           break;
       case CIRCLE       :
-                          sprintf(ecmd, "POLYGON %s %s ", width, SigName );
+                          sprintf(ecmd, "%s %s %s ", DrawCmd, width, SigName );
                           s += ecmd;
                           s += wireEllipse();
                           s += ";\n";
                           break;
       case FULL_ELLIPSE :
-                          sprintf(ecmd, "POLYGON %s %s ", width, SigName );
+                          sprintf(ecmd, "%s %s %s ", DrawCmd, width, SigName );
                           s += ecmd;
                           s += wireEllipse();
                           s += ";\n";
                           break;
       case ELLIPSE_4    :
-                          sprintf(ecmd, "POLYGON %s %s ", width, SigName );
+                          sprintf(ecmd, "%s %s %s ", DrawCmd, width, SigName );
                           s += ecmd;
                           s += wireEllipse();
                           s += ";\n";
@@ -1254,7 +1319,7 @@ void drawPolygon(void) {
   else {
     switch(Placeform) {
       case NONE         :
-                          sprintf(ecmd, "POLYGON %s %s ", width, SigName );
+                          sprintf(ecmd, "%s %s %s ", DrawCmd, width, SigName );
                           s += ecmd;
                           sprintf(ecmd, " (R%.9f %.9f)\n", x1, y1 );
                           s += ecmd;
@@ -1262,7 +1327,7 @@ void drawPolygon(void) {
                           s += ecmd +";\n";
                           break;
       case CIRCLE       :
-                          sprintf(ecmd, "POLYGON %s %s ", width, SigName );
+                          sprintf(ecmd, "%s %s %s ", DrawCmd, width, SigName );
                           s += ecmd;
                           sprintf(ecmd, " (R%.9f %.9f)\n", x1, y1 );
                           s += ecmd;
@@ -1271,7 +1336,7 @@ void drawPolygon(void) {
                           s += ";\n";
                           break;
       case FULL_ELLIPSE :
-                          sprintf(ecmd, "POLYGON %s %s ", width, SigName );
+                          sprintf(ecmd, "%s %s %s ", DrawCmd, width, SigName );
                           s += ecmd;
                           sprintf(ecmd, " (R%.9f %.9f)\n", x1, y1 );
                           s += ecmd;
@@ -1280,7 +1345,7 @@ void drawPolygon(void) {
                           s += ";\n";
                           break;
       case ELLIPSE_4    :
-                          sprintf(ecmd, "POLYGON %s %s ", width, SigName );
+                          sprintf(ecmd, "%s %s %s ", DrawCmd, width, SigName );
                           s += ecmd;
                           sprintf(ecmd, " (R%.9f %.9f)\n", x1, y1 );
                           s += ecmd;
@@ -1468,7 +1533,7 @@ void drawSmd(void) {
 void drawPad(void) {
   if (SigName) SigName = "'"+SigName+"'";
   real rad = PI / 180 * StartAngle;
-  if (PadVia == "PAD" || PadVia == "VIA") { // 2013-08-05 change shape auch bei Via
+  if (PadVia == "PAD" || PadVia == "VIA") { // 2013-08-05 change shape also for Via
     if (ShapeSelect < PAD_SHAPE_OFFSET+1 && Shapes[ShapeSelect] != " ")   // FIX: skip blank entry
     s += "CHANGE SHAPE " + Shapes[ShapeSelect] + ";\n";
   }
@@ -1555,7 +1620,7 @@ void drawHole(void) {
       if (StartAngle < EndAngle) StartAngle+= 360;
       for (real a = StartAngle; a > EndAngle; a += AngleStep) {
         rad = PI / 180 * a;
-        sprintf(h, " (R%.9f %.9f)\n", x1 + (cos(rad) * x2), y1 + (sin(rad) * x2 * EllipsFactor) ); // 2013-08-05 kein Semikolon
+        sprintf(h, " (R%.9f %.9f)\n", x1 + (cos(rad) * x2), y1 + (sin(rad) * x2 * EllipsFactor) ); // 2013-08-05 no semicolon
         s += h;
       }
       s += ";\n";
@@ -1563,7 +1628,7 @@ void drawHole(void) {
     else {
       for (real a = StartAngle; a < EndAngle; a += AngleStep) {
         rad = PI / 180 * a;
-        sprintf(h, " (R%.9f %.9f)\n", x1 + (cos(rad) * x2), y1 + (sin(rad) * x2 * EllipsFactor) ); // 2013-08-05 kein Semikolon
+        sprintf(h, " (R%.9f %.9f)\n", x1 + (cos(rad) * x2), y1 + (sin(rad) * x2 * EllipsFactor) ); // 2013-08-05 no semicolon
         s += h;
       }
       s += ";\n";
@@ -1653,6 +1718,11 @@ if (argc > 1) {
     else if (Para[0] == 'T' )  { Para[0] = ' ';  SMD_dy       = strtod(Para); }
     else if (Para[0] == '-' )  { SigName = strsub(Para, 1); }
     else if (Para[0] == 'K' )  { Sides = strtol(strsub(Para, 1)); }   // number of polygon sides
+    else if (Para[0] == 'B' )  {                                      // align polygon: BH = flat side horizontal, BV = vertical
+                                 if      (Para[1] == 'H') Align = 1;
+                                 else if (Para[1] == 'V') Align = 2;
+                                 else unknown(Para);
+                               }
     else if (Para[0] == 'D' )  { Para[0] = ' ';  PAD_diameter = Para;         }  // Pad/Via diameter
     else if (Para[0] == 'R' )  { Para[0] = ' ';  Drill_Hole   = Para;  DrawType = DrawHOLE; }
     else if (Para[0] == 0xb0 || Para[0] == '#' || strstr(Para, "°") == 0) { AngleStepTyp = Degreestep; }  // ° (Latin-1 / UTF-8) or #
@@ -1683,11 +1753,13 @@ else {
     }
   }
   Set_MinMax_Unit(grid);
+  loadLayers();
 
   int Result;
   do {
     Result = menue();
     if(PressOk) {
+      syncLayer();
       if (error()) {
       string h;
       sprintf(h, "error = %d", error());
@@ -1699,12 +1771,19 @@ else {
 }
 
 SigName = strupr(SigName);
+if (argc <= 1 && DrawType == DrawPOLYGON) SigName = "";   // dialog: no signal for polygons
 
 sprintf(s, "SET Wire_Bend 2;\n");   // *** Script header ***
 if (layer)        s += "CHANGE LAYER " + layer + ";\n";
 if (PAD_diameter) s += "CHANGE DIAMETER " + PAD_diameter + ";\n";
 if (Drill_Hole)   s += "CHANGE DRILL " + Drill_Hole + ";\n";
 //if (SigName &&  DrawType == DrawSMD || DrawType == DrawSMD) s += "SMD " + SigName + ";\n"; // 2008.05.05
+
+// Command line only: B (align) is meaningful only for a polygon with sides
+if (argc > 1 && Align && !(DrawType == DrawPOLYGON && Sides > 0)) {
+  dlgMessageBox("!Align (B) needs a polygon (O) with sides (K)", "OK");
+  exit(-2);
+}
 
 // Polygon by number of sides: full 360 deg, step = 360 / Sides, Angle start = first vertex
 if (DrawType == DrawPOLYGON && Sides > 0) {
@@ -1714,12 +1793,23 @@ if (DrawType == DrawPOLYGON && Sides > 0) {
   }
   AngleStepTyp = Degreestep;
   AngleStep    = 360.0 / Sides;
+  if (Align) {   // flat side parallel to the screen: horizontal (on top) or vertical (on the right)
+    if (Align == 1) StartAngle = 90.0 - AngleStep / 2;   // vertices at 90 deg +/- step/2
+    else            StartAngle = AngleStep / 2;          // vertices at  0 deg +/- step/2
+    while (StartAngle >= AngleStep) StartAngle -= AngleStep;   // keep it inside one step
+    while (StartAngle < 0)          StartAngle += AngleStep;
+  }
   EndAngle     = StartAngle + 360.0 - AngleStep / 2;   // exactly "Sides" vertices, immune to float rounding
 }
 
 if (Placeform == ELLIPSE_4) {
   if (EndAngle > 90.0) EndAngle = 90.0;
   if (StartAngle > EndAngle) StartAngle = 0.0;
+}
+
+if (AngleStepTyp == Calcstep && AngleStep == 0) {
+  dlgMessageBox("!Missing parameter: number of steps", "OK");
+  exit(-2);
 }
 
 switch(AngleStepTyp) {
@@ -1731,6 +1821,18 @@ switch(AngleStepTyp) {
                         break;
     case Calcstep     : AngleStep = (EndAngle - StartAngle) / AngleStep;
                         break;
+}
+
+// the vertex loops (polygon, wire with steps) need a positive step: otherwise they never end and EAGLE hangs
+if (DrawType == DrawPOLYGON || (DrawType == DrawWIRE && AngleStepTyp)) {
+  if (AngleStep <= 0) {
+    dlgMessageBox("!Angle step must be positive.\nCheck Angle step, Angle start and Angle end.", "OK");
+    exit(-2);
+  }
+  if ((EndAngle - StartAngle) / AngleStep > 20000) {
+    dlgMessageBox("!Too many vertices (more than 20000): increase the Angle step.", "OK");
+    exit(-2);
+  }
 }
 
 switch(DrawType) {
@@ -1766,4 +1868,3 @@ if (test) dlgDialog("Test") {
   };
 
 exit (s);
-
