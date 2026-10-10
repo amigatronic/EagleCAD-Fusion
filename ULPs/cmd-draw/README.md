@@ -269,5 +269,5 @@ As a rule of thumb, keep the deviation below the polygon width you use (for exam
 ## Credits and license
 
 - Original program: **CadSoft Computer GmbH / alf@cadsoft.de**, later versions distributed with EAGLE by Autodesk.
-- This edition: adaptation, bug fixes and the added features.
+- - This edition (2.2): **Arky** – [www.amigatronic.com](https://www.amigatronic.com) – bug fixes, polygon by number of sides and alignment, layer pulldown, English-only interface.
 - The original ULP states: *"THIS PROGRAM IS PROVIDED AS IS AND WITHOUT WARRANTY OF ANY KIND, EXPRESSED OR IMPLIED"*. No other license is specified by the original author, so **no license is granted by this repository beyond what the original terms allow**. Check the terms of the original program before redistributing it, and add your own license text here once that is clear.
