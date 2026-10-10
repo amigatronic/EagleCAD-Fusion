@@ -9,7 +9,7 @@
 
 It works from a dialog (run it without parameters) or from the command line with compact parameters (`RUN cmd-draw ...`). A *Test* dialog always shows the generated script before it is executed.
 
-> This repository is an adaptation of the CadSoft/Autodesk ULP `cmd-draw` (v2.01) for **EAGLE 9.6.2**, with bug fixes and one new feature (polygon by number of sides). See [Credits](#credits-and-license).
+> This repository is an adaptation of the CadSoft/Autodesk ULP `cmd-draw` (v2.01) for **EAGLE 9.6.2**, with bug fixes and new features (polygon by number of sides, flat-side alignment, layer pulldown, board outline on layer 20). All texts are **English only**. See [Credits](#credits-and-license).
 
 ---
 
@@ -21,6 +21,7 @@ It works from a dialog (run it without parameters) or from the command line with
 - [Parameter reference](#parameter-reference)
 - [Examples](#examples)
 - [Polygon by number of sides](#polygon-by-number-of-sides)
+- [Layers and the board outline (layer 20)](#layers-and-the-board-outline-layer-20)
 - [Behaviour notes](#behaviour-notes)
 - [Status and known issues](#status-and-known-issues)
 - [Changelog](#changelog)
@@ -30,11 +31,16 @@ It works from a dialog (run it without parameters) or from the command line with
 
 ## What is new in this edition
 
-### New feature
+### New features
 
 | Feature | Details |
 |---|---|
 | **Polygon by number of sides** | New dialog field *Polygon sides* and new parameter `K<n>`. Gives exactly *n* vertices on a full 360° circle (or ellipse) instead of start/end angle + step. Vertex count is immune to floating-point rounding (no duplicated closing vertex). See [Polygon by number of sides](#polygon-by-number-of-sides). |
+| **Flat-side alignment** | New dialog combo box *Align flat side* and parameters `BH` / `BV`: with *sides*, one side of the polygon is horizontal or vertical (the angle start is computed automatically). |
+| **Layer pulldown** | The *Layer* text field is now a pulldown with all layers of the current editor (`20  Dimension`, …) and a **color swatch** taken from the editor palette. |
+| **Board outline on layer 20** | Layer 20 (Dimension) accepts only wires, so a polygon shape on this layer is drawn as a **closed `WIRE` outline** instead of `POLYGON`. See [Layers and the board outline](#layers-and-the-board-outline-layer-20). |
+| **No signal prompt for polygons** | The *Signal name* field is gone for polygons in the dialog (the signal name is still available with `-<name>` on the command line). |
+| **English only** | All German texts (help, labels, comments, messages) were removed or translated. |
 
 ### Bugs fixed
 
@@ -50,6 +56,12 @@ It works from a dialog (run it without parameters) or from the command line with
 | 8 | The help examples use `#` and `.` as step symbols, but the parser only knew `°` and `/` (anything else ended in *unknown parameter*). | `#` is accepted as `°` (step in degrees) and `.` as `/` (number of steps). |
 | 9 | The file is UTF-8 but the parser compared the first character with `0xB0` (Latin-1 `°`) only. | The UTF-8 `°` is now accepted as well. |
 | 10 | Menu pictures were loaded from remote URLs inside HTML strings (not reliable in the ULP dialog). | Back to local `.bmp` files referenced with `<img src=...>` in a `dlgLabel`. |
+| 11 | **EAGLE hung** (endless loop, busy mouse pointer) for a polygon with *Angle step type = Not used*, because the step stayed 0 (same for a negative step). | The dialog now requires a positive angle step (or *Polygon sides*); a guard before the vertex loops stops with a message for zero/negative steps, and for more than 20000 vertices. Also covers the command line. |
+| 12 | Polygon with an ellipse and factor 1.0 ended with an untranslated German message (*"Da fehlt der Ellipsfaktor"*). | Reported in English inside the dialog: *Ellipse factor missing: set a value other than 1.0*. |
+| 13 | The length field label (*radius* / *distance*) depended on the order of the clicks, e.g. it stayed *distance* after Pad → Circle → Wire. | The label now follows the draw type; error messages use the same term (*Radius = 0*, *Distance = 0*, *Width > Radius*). |
+| 14 | The check *Width > Radius* was also applied to Pad, Via, SMD and Hole, which do not use the width (a stale hidden value could block the script). | The check is now limited to Wire and Polygon. |
+| 15 | Division by zero for *Number of steps* (`/`, `.`) with the value 0 on the command line. | Message *Missing parameter: number of steps*. |
+| 16 | Typos in dialog texts: `Schape`, `ponly`, `relativ`. | Fixed. |
 
 ### Inherited from upstream v2.01 (CadSoft)
 
@@ -61,18 +73,19 @@ These come from the upstream version this edition is based on:
 - HOLE generation corrected (no stray semicolons)
 - shape is also output for vias
 - coordinate limits expressed in absolute units
-- extended German help
+
+(The German help of the upstream version was removed in this edition.)
 
 ### Help improvements
 
-The English help now also documents: `W` before `O` for polygons, `R` before `P`/`V`/`S` (last one wins), the defaults (start 0°, end 360°), that the end angle is excluded except for wire/polygon, the `#` / `.` aliases, the `K` parameter, and a `K` example.
+The English help documents: `W` before `O` for polygons, `R` before `P`/`V`/`S` (last one wins), the defaults (start 0°, end 360°), that the end angle is excluded except for wire/polygon, the `#` / `.` aliases, the `K`, `BH` and `BV` parameters, and examples for them.
 
 ---
 
 ## Requirements and installation
 
-- EAGLE **6.4 or newer** (`#require 6.0400`). Developed and checked on **EAGLE 9.6.2**.
-- Autodesk Fusion Electronics is **not** targeted (the polygon command was reverted to the EAGLE `POLYGON`).
+- EAGLE **6.4 or newer** (`#require 6.0400`). 
+- Autodesk Fusion Electronics is **not** targeted (the polygon command was reverted to the EAGLE `POLYGON`) but it works too.
 
 Installation:
 
@@ -91,6 +104,10 @@ The file is **UTF-8 with CRLF line endings**. Keep this encoding when you edit i
 
 Units are those of the current grid. If `MARK` is set in the editor, coordinates are relative to the mark.
 
+Object types in short: **Wire** draws lines (a single segment from the centre, rays, or the outline of a circle/ellipse), **Polygon** draws a filled polygon, **Pad / Via / SMD / Hole** place those objects on a circle or ellipse, **Move** places existing elements, **Group** pastes rotated copies of a group.
+
+The numeric field next to the coordinates is a **radius** for Wire, Polygon and Move, and a **distance** (from the centre X/Y to the placed element) for Pad, Via, SMD, Hole and Group. The label and the error messages follow the selected type.
+
 ---
 
 ## Parameter reference
@@ -104,21 +121,22 @@ Units are those of the current grid. If `MARK` is set in the editor, coordinates
 | `°` or `#` | `N` is an angle step in degrees |
 | `/` or `.` | `N` is a number of steps: step = (end − start) / n |
 | `X<n>` `Y<n>` | Centre coordinates |
-| `L<layer>` | Layer (number or name). In MOVE, layer `16` mirrors the elements |
-| `W<n>` | Wire with width `n` (selects the WIRE function) |
+| `L<layer>` | Layer (number or name). **Required for polygons.** `L20` / `LDimension` draws a closed wire outline. In MOVE, layer `16` mirrors the elements |
+| `W<n>` | Wire with width `n` (selects the WIRE function; also the line width on layer 20) |
 | `O` | Polygon instead of wire (put it **after** `W`) |
 | `K<n>` | **Polygon by number of sides** (with `O`), see below |
+| `BH` / `BV` | With `K`: flat side horizontal / vertical (sets the angle start automatically) |
 | `P` / `V` / `S` | Pad (package) / Via (board) / SMD (package) |
 | `I<n>` `T<n>` | SMD width and height (dx, dy) |
 | `D<n>` | Pad / via diameter |
 | `R<n>` | Drill diameter; selects HOLE (put it **before** `P`/`V`/`S` if combined) |
-| `-<name>` | Signal / net name, first pad or SMD name, or first element name for MOVE |
+| `-<name>` | Signal / net name (also for polygons on the command line), first pad or SMD name, or first element name for MOVE |
 | `MOVE` | Place existing elements in a Board by name order (`R1`, `R2`, …) |
 | `M` | Rotate placed items to match their angle |
 | `G` | Group: CUT, then PASTE rotated copies |
 | `C` | Circle |
 | `0` | Full ellipse |
-| `F<n>` | Ellipse factor: height = radius × `n` |
+| `F<n>` | Ellipse factor: height = radius × `n` (must differ from 1.0 for a polygon ellipse) |
 | `4` | Quarter ellipse (first quadrant, 0°–90°) |
 
 ---
@@ -135,8 +153,14 @@ RUN cmd-draw a0 e150.0 x30 y4 w0.2 n9 # o +2.27 -gnd l1
 # Full ellipse as polygon, factor 1.7
 RUN cmd-draw a0 e50.0 x30 y4 w0.2 n9 o 0 f1.7 +2.27 -gnd l1
 
-# Circular polygon with exactly 60 sides (new)
+# Circular polygon with exactly 60 sides
 RUN cmd-draw w0.2 -gnd x30 y4 +25.4 o c k60 l1
+
+# Octagon with a flat side on top (horizontal)
+RUN cmd-draw w0.2 -gnd x30 y4 +25.4 o c k8 bh l1
+
+# Board outline: closed wire loop (not a polygon) on layer 20, 0.2 line width
+RUN cmd-draw w0.2 x30 y4 +25.4 o c k60 l20
 
 # SMDs around a circle, rotated to match, 7 steps
 RUN cmd-draw s -1 +9 n7 #
@@ -166,8 +190,10 @@ RUN cmd-draw w0.2 -gnd x0 y0 +50.8 o c k60 l1
 
 - In the dialog, select **Polygon** and fill **Polygon sides** (0 = use the angles as before).
 - `Angle start` stays available and is the position of the **first vertex** (useful to rotate the shape, e.g. 22.5° for an octagon with a flat side on top).
+- **Align flat side** (dialog) or `BH` / `BV` (command line) puts one side horizontal or vertical and overrides the angle start. It needs *sides*.
 - Angle step and end are computed: step = 360° / sides.
 - Works with circle and full ellipse (`0` + `f`). It cannot be combined with the quarter ellipse (`4`), and at least 3 sides are required.
+- Without *sides*, a polygon needs a positive angle step (degrees or number of steps); otherwise the script refuses to start instead of hanging EAGLE.
 
 ### How many sides?
 
@@ -187,6 +213,16 @@ As a rule of thumb, keep the deviation below the polygon width you use (for exam
 
 ---
 
+## Layers and the board outline (layer 20)
+
+- A ULP **cannot read the active layer** of the editor. For this reason the *Layer* pulldown must be set explicitly for a polygon (the first entry, *none - keep current layer*, is an error for polygons), and the command line needs `L<layer>`. Otherwise a filled polygon would silently be drawn on whatever layer is active.
+- The pulldown lists the layers of the current editor. The swatch next to it shows the layer color from the editor palette (if it stays empty on your system, the layer number and name are still reliable). Inner copper layers 2–15 are listed only if the board uses them.
+- **Layer 20 (Dimension) accepts only wires.** A polygon shape on layer 20 is therefore generated as a **closed `WIRE` loop** (the board outline); *Width* is the line width and no signal is used. All shape options (circle, ellipse, sides, alignment) work as for a polygon.
+- For Wire, SMD and Move the layer is optional: with *none*, the current editor layer is kept.
+- Polygons on copper layers (1–16) belong to a signal. In the dialog no signal can be entered; EAGLE may ask for one itself. With `-<name>` on the command line the signal is given directly.
+
+---
+
 ## Behaviour notes
 
 - **Order of parameters**: `W` must come before `O` (`W` selects WIRE and would override POLYGON); `R` (drill, selects HOLE) must come before `P`/`V`/`S`, because the last selection wins.
@@ -194,7 +230,8 @@ As a rule of thumb, keep the deviation below the polygon width you use (for exam
 - **Clockwise placement**: use a negative step for MOVE, PAD, SMD and HOLE. If start is smaller than end with a negative step, 360° is added to the start angle.
 - **MOVE** works only in a Board. Elements are taken by incrementing the number in the first name (`R1`, `R2`, …) and the sequence stops at the first missing element.
 - **GROUP** needs angle step and end; the radius is not used. With *Use selected group* the group defined before starting the ULP is used, otherwise every visible object is grouped.
-- The `K` parameter is used **only with `O`** (polygon).
+- The `K`, `BH` and `BV` parameters are used **only with `O`** (polygon).
+- **Safety limits**: wire/polygon loops need a positive step and at most 20000 vertices; otherwise a message is shown and nothing is executed.
 
 ---
 
@@ -203,14 +240,16 @@ As a rule of thumb, keep the deviation below the polygon width you use (for exam
 **Checked**
 
 - Polygon with many sides forming a circle was tested on EAGLE 9.6.2.
-- The remaining changes were reviewed in the code (balanced blocks, every referenced picture defined, vertex-count logic simulated for 3 to 3600 sides) but not every mode has been exercised in EAGLE. Bug reports are welcome.
+- The later changes (layer pulldown, layer 20 outline, radius/distance labels, step guards) were reviewed in the code (balanced blocks, line endings) but **not every mode has been exercised in EAGLE**. Bug reports are welcome.
 
-**Known issues / limitations (not changed)**
+**Known issues / limitations**
 
 - The *Test* dialog is always shown (`test = 1`).
-- Some dialog texts still contain typos (`Schape`, `Heigh&t`, `ponly`, `relativ`). The picture file names with typos (`cricle`, `degsetp`, `degstap`, `clac`) are kept on purpose because they match the original `.bmp` files.
+- The picture file names with typos (`cricle`, `degsetp`, `degstap`, `clac`) are kept on purpose because they match the original `.bmp` files.
+- The layer color swatch is an HTML table inside a dialog label; it is not verified on every EAGLE version.
+- Inner copper layers 2–15 that the board does not use are not offered in the layer pulldown.
 - Angle loops accumulate floating-point steps (`a += step`); for wires, pads and similar objects the last point of a very fine step may be missed or duplicated. Polygons by number of sides are not affected.
-- Wire/ellipse placement from the dialog is not covered by the new *sides* option (only polygons).
+- Wire/ellipse placement from the dialog is not covered by the *sides* option (only polygons).
 - A few unused variables and dead code lines of the original remain (for example the group-distance calculation that is overwritten by the coordinate limit).
 
 ---
@@ -221,12 +260,14 @@ As a rule of thumb, keep the deviation below the polygon width you use (for exam
 |---|---|
 | 1.05 (2006–2008) | CadSoft original (alf@cadsoft.de): GROUP, SMD name fixes |
 | 2.01 (up to 2013) | CadSoft update: rotate offset, group improvements, V6 resolution, hole and via shape fixes |
-|  | `POLYGON` restored, local pictures, SMD/offset/shape/label/error fixes, `#` and `.` symbols, UTF-8 `°`, help additions, **polygon by number of sides (`K`)** |
+| 2.0 (this edition) | `POLYGON` restored, local pictures, SMD/offset/shape/label/error fixes, `#` and `.` symbols, UTF-8 `°`, help additions, polygon by number of sides (`K`) |
+| 2.1 | Polygon alignment (`BH` / `BV`, dialog combo *Align flat side*) |
+| 2.2 | English only; no signal prompt for polygons; layer pulldown with color swatch; layer mandatory for polygons; layer 20 drawn as closed `WIRE` outline; radius/distance label and messages follow the draw type; fix for the endless loop (EAGLE hang) with polygons without angle step; ellipse-factor message in the dialog |
 
 ---
 
 ## Credits and license
 
 - Original program: **CadSoft Computer GmbH / alf@cadsoft.de**, later versions distributed with EAGLE by Autodesk.
-- This edition: adaptation, bug fixes and the *sides* feature.
+- This edition: adaptation, bug fixes and the added features.
 - The original ULP states: *"THIS PROGRAM IS PROVIDED AS IS AND WITHOUT WARRANTY OF ANY KIND, EXPRESSED OR IMPLIED"*. No other license is specified by the original author, so **no license is granted by this repository beyond what the original terms allow**. Check the terms of the original program before redistributing it, and add your own license text here once that is clear.
