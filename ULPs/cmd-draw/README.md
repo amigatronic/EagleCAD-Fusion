@@ -1,4 +1,4 @@
-# cmd-draw — EAGLE ULP (EAGLE 9.6.2 edition)
+# cmd-draw — EAGLE ULP
 
 `cmd-draw` is an EAGLE User Language Program that **generates and runs a script** to place objects along a circle, an ellipse or a quarter ellipse:
 
@@ -221,7 +221,7 @@ As a rule of thumb, keep the deviation below the polygon width you use (for exam
 |---|---|
 | 1.05 (2006–2008) | CadSoft original (alf@cadsoft.de): GROUP, SMD name fixes |
 | 2.01 (up to 2013) | CadSoft update: rotate offset, group improvements, V6 resolution, hole and via shape fixes |
-| 2.01 + EAGLE 9.6.2 edition (2026-10-10) | `POLYGON` restored, local pictures, SMD/offset/shape/label/error fixes, `#` and `.` symbols, UTF-8 `°`, help additions, **polygon by number of sides (`K`)** |
+|  | `POLYGON` restored, local pictures, SMD/offset/shape/label/error fixes, `#` and `.` symbols, UTF-8 `°`, help additions, **polygon by number of sides (`K`)** |
 
 ---
 
