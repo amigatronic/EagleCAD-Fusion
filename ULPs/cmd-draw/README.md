@@ -262,12 +262,12 @@ As a rule of thumb, keep the deviation below the polygon width you use (for exam
 | 2.01 (up to 2013) | CadSoft update: rotate offset, group improvements, V6 resolution, hole and via shape fixes |
 | 2.0 (this edition) | `POLYGON` restored, local pictures, SMD/offset/shape/label/error fixes, `#` and `.` symbols, UTF-8 `°`, help additions, polygon by number of sides (`K`) |
 | 2.1 | Polygon alignment (`BH` / `BV`, dialog combo *Align flat side*) |
-| 2.2 | English only; no signal prompt for polygons; layer pulldown with color swatch; layer mandatory for polygons; layer 20 drawn as closed `WIRE` outline; radius/distance label and messages follow the draw type; fix for the endless loop (EAGLE hang) with polygons without angle step; ellipse-factor message in the dialog |
+| 2.2.1 | English only; no signal prompt for polygons; layer pulldown with color swatch; layer mandatory for polygons; layer 20 drawn as closed `WIRE` outline; radius/distance label and messages follow the draw type; fix for the endless loop (EAGLE hang) with polygons without angle step; ellipse-factor message in the dialog |
 
 ---
 
 ## Credits and license
 
 - Original program: **CadSoft Computer GmbH / alf@cadsoft.de**, later versions distributed with EAGLE by Autodesk.
-- This edition (2.2): **Arky** – [www.amigatronic.com](https://www.amigatronic.com) – bug fixes, polygon by number of sides and alignment, layer pulldown, English-only interface.
+- This edition (2.2.1): **Arky** – [www.amigatronic.com](https://www.amigatronic.com) – bug fixes, polygon by number of sides and alignment, layer pulldown, English-only interface.
 - The original ULP states: *"THIS PROGRAM IS PROVIDED AS IS AND WITHOUT WARRANTY OF ANY KIND, EXPRESSED OR IMPLIED"*. No other license is specified by the original author, so **no license is granted by this repository beyond what the original terms allow**. Check the terms of the original program before redistributing it, and add your own license text here once that is clear.
