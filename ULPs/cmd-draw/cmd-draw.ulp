@@ -30,7 +30,8 @@
        "** If <b>MARK</b> is set in PAC/BRD/SCH editor, coordinates are relative. <br>"
        "Parameters can be used in any order; not case sensitive."
        "<p>"
-       "<author>Author:<b> Cadsoft</b></author></nobr></qt>"
+"<author>Original Author:<b> Cadsoft</b></author><br>"
+"Version 2.2.1 by Arky - <a href=\"https://www.amigatronic.com\">www.amigatronic.com</a></nobr></qt>"
 
 string Help = "<nobr>" +
        "RUN cmd-draw w0.4 -gnd x1.3 y2.56 +17.45 a115 n75 e180 # lTop <br>" +
@@ -77,7 +78,7 @@ string Label_Move = " ";
 
 int test = 1;
 
-string Version = " Version 2.2 ";  // 2006-08-10 alf@cadsoft.de
+string Version = " Version 2.2.1 ";  // 2006-08-10 alf@cadsoft.de
                                     // 2008-04-10 changed GROUP ... (>x y); alf@cadsoft.de
                                     // 2008-05-06 fixed SMD generation with name
                                     // 2010-06-09 fixed PAD name generation.
@@ -111,6 +112,8 @@ string Version = " Version 2.2 ";  // 2006-08-10 alf@cadsoft.de
                                     //            Layer field replaced by a pulldown of all layers with the editor color swatch.
                                     //            Radius/Distance label and error messages follow the draw type.
                                     //            Fixed endless loop (EAGLE hang) for polygon with Angle step not used/zero/negative.
+                                    // 2026-10-11 Phase 1: centralized input validation, actionable error messages,
+                                    //            multi-error reporting, and validation for command-line parameters.
 
 enum { DrawWIRE,             // ** do not change this list  **
        DrawPOLYGON,
@@ -186,7 +189,8 @@ int PressOk = 0;
 
 string s;
 string h;
-string Help_Err = " ";
+string Help_Err = "";
+string ValidationMessage = "";
 
 string Name1st, NameExt; // use as variable Label in Menu
 
@@ -263,7 +267,8 @@ void addLayerEntry(int number, string name, int color) {
   sprintf(e, "%3d  %s", number, name);
   LayerText[LayerCount]   = e;
   LayerNumber[LayerCount] = number;
-  LayerRGB[LayerCount]    = palette(color);   // color as currently shown in the editor
+  if (color >= 0 && color < PALETTE_ENTRIES) LayerRGB[LayerCount] = palette(color);   // color as currently shown in the editor
+  else                                       LayerRGB[LayerCount] = 0;                // out-of-range index would terminate the ULP
   return;
 }
 
@@ -312,55 +317,177 @@ string lengthName(void) {
 }
 
 
-// *** analysis User Error ***
-int error(void) {
-  int err = 0;
-  if (DrawType == DrawGROUP) {
-    // FIX: removed duplicated test (!AngleStep twice) and an unreachable branch
-    if (!AngleStep || !EndAngle) { Help_Err = "Angle step or Angle end = 0"; return -1; }
-    if (!AngleStepTyp) {
-      Help_Err = "Select Angle step type :\n° degree step\ncalc. steps.";
-      return -1;
-    }
-    return 0;
+// *** Input validation ***
+void addValidationError(string message) {
+  if (ValidationMessage) {
+    ValidationMessage += "\n";
+    Help_Err += "<br>";
   }
-  // width is only used (and shown) for Wire and Polygon
-  if ((DrawType == DrawWIRE || DrawType == DrawPOLYGON) && strtod(width) >= x2) {
-    Help_Err = "Width > " + lengthName();  err = -1;
-  }
-  if (!x2) {
-    Help_Err = lengthName() + " = 0";
-    if (usesDistance()) Help_Err += " (distance from the center X/Y to the placed element)";
-    err = -1;
-  }
-    if (DrawType == DrawSMD) {
-    if (layer == "1" || layer == "16") ;
-    else { err = -1; Help_Err = "Layer for SMD ?"; }
-  }
-  if (DrawType == DrawMOVE) {
-    if (!SigName) { Help_Err = "1.st Element name ?"; err = -1; }
-  }
-  if (DrawType == DrawPOLYGON) {
-    // a ULP cannot read the active editor layer, so the layer must be given explicitly
-    if (!layer) { err = -1; Help_Err = "Select the Layer for the Polygon (20 Dimension = board outline)"; }
-    if ((Placeform == FULL_ELLIPSE || Placeform == ELLIPSE_4) && EllipsFactor == 1.0) {
-      err = -1; Help_Err = "Ellipse factor missing: set a value other than 1.0";
-    }
-  }
-  if (DrawType == DrawPOLYGON && Align && Sides <= 0) { err = -1; Help_Err = "Align needs Polygon sides"; }
-  if (DrawType == DrawPOLYGON && Sides > 0) {   // number of sides replaces angle step/end
-    if (Sides < 3)                { err = -1; Help_Err = "Sides must be at least 3"; }
-    if (Placeform == ELLIPSE_4)   { err = -1; Help_Err = "Sides: not usable with 1/4 ellipse"; }
-  }
-  else if (DrawType == DrawPOLYGON && AngleStep <= 0) {
-    err = -1; Help_Err = "Polygon needs an Angle step type (degree or calc.) with a positive Angle step, or Polygon sides";
-  }
-  else if (AngleStepTyp && AngleStep == 0) {
-    err = -1; Help_Err = "Missing parameter: Angle step";
-  }
-  return err;
+  ValidationMessage += "- " + message;
+  Help_Err += "- " + message;
+  return;
 }
 
+int error(void) {
+  int errors = 0;
+  real numericWidth = strtod(width);
+  real numericDrill = strtod(Drill_Hole);
+  real numericDiameter = strtod(PAD_diameter);
+
+  Help_Err = "";
+  ValidationMessage = "";
+
+  // Common geometry checks.
+  if (DrawType != DrawGROUP || Placeform != NONE) {
+    if (x2 <= 0) {
+      if (usesDistance()) addValidationError("Distance must be greater than zero.");
+      else addValidationError("Radius must be greater than zero.");
+      errors++;
+    }
+  }
+
+  if (DrawType == DrawWIRE || DrawType == DrawPOLYGON) {
+    if (!width || numericWidth <= 0) {
+      addValidationError("Wire width is missing or invalid. Enter a width greater than zero.");
+      errors++;
+    }
+  }
+
+  // The selected operation must be supported in the current editor.
+  if (DrawType == DrawMOVE && !board) {
+    addValidationError("Move is available only in the Board editor.");
+    errors++;
+  }
+
+  if (DrawType == DrawGROUP) {
+    if (!AngleStepTyp) {
+      addValidationError("Select an Angle step type: degree step or calculated steps.");
+      errors++;
+    }
+    if (AngleStep == 0) {
+      addValidationError("Angle step or number of calculated steps must be greater than zero.");
+      errors++;
+    }
+    if (EndAngle == 0) {
+      addValidationError("Angle end must be greater than zero for Group.");
+      errors++;
+    }
+  }
+
+  if (DrawType == DrawSMD) {
+    if (board && layer != "1" && layer != "16") {
+      addValidationError("SMD layer must be Top (1) or Bottom (16) when drawing on a board.");
+      errors++;
+    }
+    if (SMD_dx < 0 || SMD_dy < 0 ||
+        (SMD_dx > 0 && SMD_dy <= 0) || (SMD_dx <= 0 && SMD_dy > 0)) {
+      addValidationError("SMD width and height must both be greater than zero, or both be zero to use the current settings.");
+      errors++;
+    }
+  }
+
+  if (DrawType == DrawMOVE && !SigName) {
+    addValidationError("Enter the name of the first element to move.");
+    errors++;
+  }
+
+  if (DrawType == DrawHOLE) {
+    if (!Drill_Hole || numericDrill <= 0) {
+      addValidationError("Hole drill diameter is missing or invalid. Enter a value greater than zero.");
+      errors++;
+    }
+  }
+
+  if (Drill_Hole && numericDrill <= 0) {
+    addValidationError("Drill diameter is invalid. Enter a value greater than zero.");
+    errors++;
+  }
+  if (PAD_diameter && numericDiameter <= 0) {
+    addValidationError("Pad/Via diameter is invalid. Enter a value greater than zero.");
+    errors++;
+  }
+
+  if (DrawType == DrawPOLYGON) {
+    if (!layer) {
+      addValidationError("Select a layer for the polygon. Use layer 20 (Dimension) for a board outline.");
+      errors++;
+    }
+    if ((Placeform == FULL_ELLIPSE || Placeform == ELLIPSE_4) && EllipsFactor == 1.0) {
+      addValidationError("Ellipse factor is missing. Set a value other than 1.0.");
+      errors++;
+    }
+    if (Align && Sides <= 0) {
+      addValidationError("Flat-side alignment requires a polygon with a specified number of sides.");
+      errors++;
+    }
+    if (Sides > 0 && Sides < 3) {
+      addValidationError("A polygon must have at least 3 sides.");
+      errors++;
+    }
+    if (Sides > 20000) {
+      addValidationError("Polygon side count exceeds 20000. Use fewer sides.");
+      errors++;
+    }
+    if (Sides > 0 && Placeform == ELLIPSE_4) {
+      addValidationError("Polygon side count cannot be combined with the quarter-ellipse form.");
+      errors++;
+    }
+    if (Sides <= 0) {
+      if (!AngleStepTyp) {
+        addValidationError("Polygon requires an angle step type or a polygon side count.");
+        errors++;
+      }
+      else if (AngleStep <= 0) {
+        if (AngleStepTyp == Calcstep)
+          addValidationError("Calculated step count must be greater than zero.");
+        else
+          addValidationError("Polygon angle step must be greater than zero.");
+        errors++;
+      }
+    }
+  }
+  else if (DrawType == DrawWIRE && AngleStepTyp) {
+    if (AngleStep <= 0) {
+      if (AngleStepTyp == Calcstep)
+        addValidationError("Calculated step count for Wire must be greater than zero.");
+      else
+        addValidationError("Wire angle step must be greater than zero.");
+      errors++;
+    }
+  }
+
+  if (AngleStepTyp == Calcstep && AngleStep <= 0 &&
+      DrawType != DrawGROUP && DrawType != DrawWIRE && DrawType != DrawPOLYGON) {
+    addValidationError("Calculated step count must be greater than zero.");
+    errors++;
+  }
+
+  if (AngleStepTyp == Calcstep && AngleStep > 0 && EndAngle <= StartAngle &&
+      DrawType != DrawPAD && DrawType != DrawSMD && DrawType != DrawHOLE && DrawType != DrawMOVE) {
+    addValidationError("End angle must be greater than start angle when using calculated steps.");
+    errors++;
+  }
+
+  if ((Placeform == FULL_ELLIPSE || Placeform == ELLIPSE_4) &&
+      (EllipsFactor <= 0 || EllipsFactor > 100)) {
+    addValidationError("Ellipse factor must be greater than zero and no greater than 100.");
+    errors++;
+  }
+
+  if ((DrawType == DrawPOLYGON || (DrawType == DrawWIRE && AngleStepTyp)) &&
+      AngleStepTyp == Calcstep && AngleStep > 20000) {
+    addValidationError("Calculated step count exceeds 20000. Use fewer steps.");
+    errors++;
+  }
+  if ((DrawType == DrawPOLYGON || (DrawType == DrawWIRE && AngleStepTyp)) &&
+      AngleStepTyp == Degreestep && AngleStep > 0 &&
+      (EndAngle - StartAngle) / AngleStep > 20000) {
+    addValidationError("The requested geometry would contain more than 20000 vertices. Increase the angle step.");
+    errors++;
+  }
+
+  return errors;
+}
 
 
 //Image URLS
@@ -938,7 +1065,7 @@ int menue(void) {
               dlgCell(  9, 9) dlgLabel(Angle_end_used, 1);
               if (DrawType == DrawPOLYGON) {   // number of sides instead of angle end/step
                 dlgCell( 10, 2) dlgLabel(" Polygon si&des ");
-                dlgCell( 10, 3) dlgIntEdit(Sides, 0, 100000);
+                dlgCell( 10, 3) dlgIntEdit(Sides, 0, 20000);
                 dlgCell( 10, 5) dlgLabel(" 0 = use angles; if set, angle step/end are ignored ");
                 dlgCell( 11, 2) dlgLabel(" Ali&gn flat side ");
                 dlgCell( 11, 3) dlgComboBox(AlignText, Align);
@@ -1758,12 +1885,13 @@ else {
   int Result;
   do {
     Result = menue();
-    if(PressOk) {
+    if (PressOk) {
       syncLayer();
-      if (error()) {
-      string h;
-      sprintf(h, "error = %d", error());
-        dlgMessageBox(h + " \n" + Help_Err, "OK");
+      int validationErrors = error();
+      if (validationErrors > 0) {
+        string validationTitle;
+        sprintf(validationTitle, "Input validation failed (%d issue(s))", validationErrors);
+        dlgMessageBox(validationTitle + "\n\n" + ValidationMessage, "OK");
         PressOk = 0;
       }
     }
@@ -1800,6 +1928,18 @@ if (DrawType == DrawPOLYGON && Sides > 0) {
     while (StartAngle < 0)          StartAngle += AngleStep;
   }
   EndAngle     = StartAngle + 360.0 - AngleStep / 2;   // exactly "Sides" vertices, immune to float rounding
+}
+
+// Validate command-line parameters as well as dialog input. Keep this before
+// converting calculated step counts into angular increments.
+if (argc > 1) {
+  int validationErrors = error();
+  if (validationErrors > 0) {
+    string validationTitle;
+    sprintf(validationTitle, "Input validation failed (%d issue(s))", validationErrors);
+    dlgMessageBox(validationTitle + "\n\n" + ValidationMessage, "OK");
+    exit(-2);
+  }
 }
 
 if (Placeform == ELLIPSE_4) {
@@ -1866,5 +2006,8 @@ if (test) dlgDialog("Test") {
       dlgLabel(Version);
     }
   };
+
+// Fit the drawing to the editor window after all generated commands have run.
+s += "WINDOW FIT;\n";
 
 exit (s);
