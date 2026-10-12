@@ -7,6 +7,7 @@
 Only the Python standard library is required (the GUI uses `tkinter`, which ships with the Windows Python installer).
 
 > by **Arky** - [amigatronic.com](https://www.amigatronic.com)
+![Schematic](screenshots/schematic.png)
 
 ## Features
 
