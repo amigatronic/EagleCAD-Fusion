@@ -7,7 +7,7 @@
 Only the Python standard library is required (the GUI uses `tkinter`, which ships with the Windows Python installer).
 
 > by **Arky** - [amigatronic.com](https://www.amigatronic.com)
-![Schematic](screenshots/schematic.png)
+
 
 ## Features
 
@@ -23,6 +23,8 @@ Only the Python standard library is required (the GUI uses `tkinter`, which ship
   - solder mask color (green, red, blue, yellow, white, black, magenta/purple, orange, pink, gray, transparent), mask finish (glossy / matte) and pad finish (gold ENIG, tin HASL, bare copper) can be chosen from the 3D toolbar; the silkscreen color follows the mask;
   - Three.js and TrackballControls are embedded in the `.htm`, so the file is fully standalone (and large: this is expected).
 - Simple `tkinter` GUI and a command line interface.
+
+![Schematic](screenshots/schematic.png)
 
 ## Requirements
 
