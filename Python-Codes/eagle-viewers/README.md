@@ -25,6 +25,8 @@ Only the Python standard library is required (the GUI uses `tkinter`, which ship
 - Simple `tkinter` GUI and a command line interface.
 
 ![Schematic](screenshots/schematic.png)
+![2D Render](screenshots/2D_render.png)
+![3D Render](screenshots/3D_render.png)
 
 ## Requirements
 
