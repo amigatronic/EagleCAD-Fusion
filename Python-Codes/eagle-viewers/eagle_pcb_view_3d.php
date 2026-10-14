@@ -1146,18 +1146,23 @@ body{margin:0;display:flex;height:100vh;background:#000;color:#ddd;font:13px san
 #nav a{background:#32324a;color:#6ee6e6;text-decoration:none}
 #nav a:hover{background:#44445f}
 #nav .cur{background:#222;color:#888}
+#credit{margin-top:16px;padding-top:8px;border-top:1px solid #333;font-size:11px;line-height:1.6;color:#777}
+#credit a{color:#6ee6e6;text-decoration:none}
+#credit a:hover{text-decoration:underline}
 #view{flex:1;min-width:0;position:relative}
 #view>svg{width:100%;height:100%;display:block;touch-action:none;cursor:grab}
 #v3d{position:absolute;inset:0;display:none;background:#101010}
 #v3d canvas{display:block}
-#bar3d{position:absolute;top:8px;left:8px;z-index:2}
+#bar3d{position:absolute;top:8px;left:8px;z-index:2;display:flex;flex-wrap:wrap;align-items:center;gap:4px 0;max-width:calc(100% - 16px);padding:6px 8px;border-radius:6px;background:rgba(16,16,16,.72)}
+#bar3d input[type=range]{width:90px;vertical-align:middle}
 #bar3d button{margin-right:4px}
 #bar3d label{margin-left:8px}
 #msg3d{position:absolute;bottom:8px;left:8px;z-index:2;color:#999}
 </style></head><body>
 <div id="side"><b>__TITLE__</b><br>__NAV__<br>
 <button id="fit">Fit</button><button id="all">All</button><button id="none">None</button>__FLIP____BTN3D__
-__LAYERS__</div>
+__LAYERS__
+<div id="credit">__CREDITS__</div></div>
 <div id="view">__SVG__
 __OVERLAY3D__</div>
 <script>
@@ -1223,7 +1228,12 @@ $OVERLAY_3D = '<div id="v3d"><div id="bar3d"><button data-v="iso">Iso</button><b
               '<button data-v="bottom">Bottom</button>' .
               '<label>Mask <select id="s-mask"></select></label>' .
               '<label>Finish <select id="s-fin"></select></label>' .
-              '<label>Pads <select id="s-pad"></select></label></div><div id="msg3d"></div></div>';
+              '<label>Pads <select id="s-pad"></select></label>' .
+              '<span style="flex-basis:100%;height:0"></span>' .
+              '<label>Light <input type="range" id="s-light" min="10" max="150" value="75"></label>' .
+              '<label>Ambient <input type="range" id="s-amb" min="0" max="100" value="40"></label>' .
+              '<label>Track contrast <input type="range" id="s-con" min="0" max="200" value="100"></label>' .
+              '<button type="button" id="b-reset" style="margin-left:10px">Reset</button></div><div id="msg3d"></div></div>';
 
 function build_html($title, $svg, $info, $flip = false, $three = null) {
     global $HTML_TMPL, $OVERLAY_3D, $JS3D;
@@ -1242,6 +1252,7 @@ function build_html($title, $svg, $info, $flip = false, $three = null) {
         '__SVG__'      => $svg,
         '__OVERLAY3D__'=> $three ? $OVERLAY_3D : '',
         '__NAV__'      => '<!--NAV-->',
+        '__CREDITS__'  => credits_html(),
     ]);
     $scripts = "";
     if ($three) {
@@ -1280,13 +1291,32 @@ const selMask = document.getElementById('s-mask'), selFin = document.getElementB
     Object.keys(tab).forEach(k => sel.add(new Option(tab[k][0], k)));
     sel.onchange = () => window.layersChanged();
 });
+// Track contrast: 100% = preset, 0% = tracks as dark/light as the mask, 200% = twice the preset difference
+const hex2 = h => [1, 3, 5].map(i => parseInt(h.substr(i, 2), 16));
+function mixHex(a, b, k) {
+    const A = hex2(a), B = hex2(b);
+    return '#' + A.map((v, i) => Math.max(0, Math.min(255, Math.round(v + (B[i] - v) * k))).toString(16).padStart(2, '0')).join('');
+}
+const sLight = document.getElementById('s-light'), sAmb = document.getElementById('s-amb'), sCon = document.getElementById('s-con');
 function palette() {
     const m = MASKS[selMask.value], p = PADS[selPad.value][1], s = m[3];
-    return {base: m[1], pad: p, real: {1: m[2], 16: m[2], 17: p, 18: p,
+    const tr = mixHex(m[1], m[2], sCon.value / 100);
+    return {base: m[1], pad: p, real: {1: tr, 16: tr, 17: p, 18: p,
             21: s, 22: s, 25: s, 26: s, 27: s, 28: s}};
 }
+// lights react immediately; the track contrast changes the texture, so it rebuilds (debounced)
+function applyLights() {
+    if (!amb) return;
+    const L = sLight.value / 100;
+    amb.intensity = sAmb.value / 100; l1.intensity = 0.8 * L; l2.intensity = 0.4 * L;
+}
+sLight.oninput = applyLights; sAmb.oninput = applyLights;
+sCon.oninput = () => window.layersChanged();
+document.getElementById('b-reset').onclick = () => {
+    sLight.value = 75; sAmb.value = 40; sCon.value = 100; applyLights(); window.layersChanged();
+};
 const ser = new XMLSerializer();
-let renderer, scene, camera, controls, group = null, dist = 1;
+let renderer, scene, camera, controls, group = null, dist = 1, amb, l1, l2;
 let active = false, ready = false, looping = false, timer = null, token = 0;
 const on = n => { const b = document.querySelector('#side input[data-l="L' + n + '"]'); return !!b && b.checked; };
 function pip(x, y, poly) {
@@ -1399,14 +1429,15 @@ function init() {
     scene = new THREE.Scene();
     scene.background = new THREE.Color(0x101010);
     camera = new THREE.PerspectiveCamera(35, 1, 0.5, 20000);
-    scene.add(new THREE.AmbientLight(0xffffff, 0.6));
-    const l1 = new THREE.DirectionalLight(0xffffff, 0.7); l1.position.set(-1, -1, 2); scene.add(l1);
-    const l2 = new THREE.DirectionalLight(0xffffff, 0.5); l2.position.set(1, 1, -2); scene.add(l2);
+    amb = new THREE.AmbientLight(0xffffff, 0.4); scene.add(amb);
+    l1 = new THREE.DirectionalLight(0xffffff, 0.6); l1.position.set(-1, -1, 2); scene.add(l1);
+    l2 = new THREE.DirectionalLight(0xffffff, 0.3); l2.position.set(1, 1, -2); scene.add(l2);
+    applyLights();   // sync with the sliders
     dist = Math.max(W, H) * 1.8;
     controls = new THREE.TrackballControls(camera, renderer.domElement);
     controls.rotateSpeed = 3; controls.zoomSpeed = 1.2; controls.panSpeed = 0.8; controls.staticMoving = true;
     const views = {iso: [0, -0.55, 0.85], top: [0, 0, 1], bottom: [0, 0, -1]};
-    host.querySelectorAll('#bar3d button').forEach(b => b.onclick = () => setView(...views[b.dataset.v]));
+    host.querySelectorAll('#bar3d button[data-v]').forEach(b => b.onclick = () => setView(...views[b.dataset.v]));
     window.addEventListener('resize', resize);
     host.style.display = 'block'; resize(); setView(...views.iso);
     ready = true;
@@ -1690,6 +1721,20 @@ function process_group($paths, $outdir, $base) {
     return [$written, $log];
 }
 
+// ----------------------------------------------------------------- application info
+const APP_NAME    = 'EaglePCBView3D';
+const APP_VERSION = '1.0';
+const URL_AUTHOR  = 'https://www.amigatronic.com';
+const URL_REPO    = 'https://github.com/amigatronic/EagleCAD-Fusion/tree/main/Python-Codes/eagle-viewers';
+const URL_ONLINE  = 'https://aviotronic.altervista.org/eagleviewer/';
+
+// Small credit block shown in the side panel of every generated viewer
+function credits_html() {
+    return APP_NAME . ' v' . APP_VERSION . '<br>by <a href="' . URL_AUTHOR . '" target="_blank" rel="noopener">Arky - amigatronic.com</a><br>'
+         . '<a href="' . URL_REPO . '" target="_blank" rel="noopener">GitHub</a> &middot; '
+         . '<a href="' . URL_ONLINE . '" target="_blank" rel="noopener">Online version</a>';
+}
+
 // ================================================================= MAIN
 session_set_cookie_params(['httponly' => true, 'samesite' => 'Lax']);
 session_start();
@@ -1783,70 +1828,133 @@ if ($action === 'render' && isset($_FILES['eagle_file'])) {
 <html>
 <head>
 <meta charset="utf-8">
-<title>EaglePCBView3D - Web</title>
+<title>EaglePCBView3D - View EAGLE .brd and .sch files online (2D + 3D)</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="Free online viewer for Autodesk EAGLE boards (.brd) and schematics (.sch): interactive 2D layers and a 3D board view, no install needed.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='10' fill='%230d6b36'/%3E%3Ccircle cx='20' cy='20' r='5' fill='%23d9bf63'/%3E%3Ccircle cx='44' cy='44' r='5' fill='%23d9bf63'/%3E%3Cpath d='M20 20h16l8 8v16' stroke='%232f9e58' stroke-width='4' fill='none'/%3E%3C/svg%3E">
 <style>
-body { font-family: sans-serif; background: #1a1a1a; color: #ddd; margin: 20px; }
-h1 { color: #6ee66e; }
-form { background: #252525; padding: 20px; border-radius: 6px; max-width: 700px; }
-#drop { border: 2px dashed #555; border-radius: 6px; padding: 18px; text-align: center; color: #aaa; }
-#drop.over { border-color: #6ee66e; color: #6ee66e; }
-.row { margin: 12px 0; display: flex; gap: 8px; flex-wrap: wrap; }
-#projects { margin: 10px 0; font-size: 14px; }
-.proj { padding: 6px 8px; background: #2d2d2d; border-radius: 4px; margin-bottom: 4px; }
+:root { --bg:#141414; --card:#212121; --line:#343434; --acc:#6ee66e; --acc2:#6ee6e6; --blue:#3c3cf0; --warn:#e6c46e; --err:#ff7878; --mut:#9a9a9a; }
+* { box-sizing: border-box; }
+body { margin: 0; color: #ddd; font: 15px/1.55 "Segoe UI", system-ui, sans-serif;
+       background: radial-gradient(1100px 480px at 50% -120px, #214a2b 0%, #141414 62%) no-repeat, var(--bg); }
+a { color: var(--acc2); }
+.wrap { max-width: 1100px; margin: 0 auto; padding: 0 20px 36px; }
+
+/* hero */
+.hero { text-align: center; padding: 46px 0 8px; }
+.hero h1 { margin: 0; font-size: 42px; letter-spacing: .5px; color: #fff; }
+.hero h1 span { color: var(--acc); }
+.tag { font-size: 19px; color: #d4d4d4; max-width: 740px; margin: 12px auto 0; }
+.badges { display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; margin-top: 18px; }
+.badge { border: 1px solid #3d5a42; background: #1c2b1f; color: #bfe9c4; border-radius: 999px; padding: 4px 14px; font-size: 13px; }
+
+/* cards */
+.card { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 24px; margin: 24px auto; box-shadow: 0 10px 34px #0007; }
+.card.narrow { max-width: 760px; }
+h2.sec { text-align: center; color: #fff; font-size: 24px; margin: 46px 0 6px; }
+.sub { text-align: center; color: var(--mut); margin: 0 0 18px; }
+
+/* upload */
+#drop { border: 2px dashed #4a4a4a; border-radius: 12px; padding: 30px 18px; text-align: center; color: #bbb; transition: .15s; background: #1b1b1b; }
+#drop.over { border-color: var(--acc); color: var(--acc); background: #1c2b1f; }
+#drop svg { width: 54px; height: 54px; margin-bottom: 6px; opacity: .85; }
+#drop .big { display: block; font-size: 18px; color: #eee; margin-bottom: 10px; }
+#drop small { display: block; margin-top: 12px; color: var(--mut); }
+.row { margin: 4px 0; display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; }
+#projects { margin: 14px 0 4px; font-size: 14px; }
+.proj { padding: 8px 12px; background: #2a2a2a; border: 1px solid #3a3a3a; border-radius: 8px; margin-bottom: 6px; }
 .proj label { cursor: pointer; }
-.ok { color: #6ee66e; }
-.no { color: #e6c46e; }
-.proj button { padding: 2px 8px; font-size: 12px; margin-left: 8px; background: #444; }
-button { background: #3c3cf0; color: white; border: none; padding: 10px 20px;
-         border-radius: 4px; cursor: pointer; font-size: 14px; }
+.ok { color: var(--acc); }
+.no { color: var(--warn); }
+.actions { text-align: center; margin-top: 16px; }
+button { background: var(--blue); color: #fff; border: none; padding: 10px 22px; border-radius: 8px; cursor: pointer; font-size: 15px; }
 button:hover { background: #5555ff; }
-button:disabled { background: #444; color: #888; cursor: default; }
-.msg { padding: 4px 0; font-family: monospace; font-size: 13px; }
-.msg.ok { color: #6ee66e; }
-.msg.warn { color: #e6c46e; }
-.msg.err { color: #ff7878; }
-.group { background: #252525; border-radius: 6px; padding: 12px 16px; margin-top: 16px; }
-.group b { color: #ddd; }
-.tabs { margin: 8px 0; display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
-.tab { background: #32324a; color: #6ee6e6; padding: 6px 14px; }
+button:disabled { background: #3a3a3a; color: #888; cursor: default; }
+#btnRender { background: linear-gradient(#37c24a, #23993a); padding: 12px 40px; font-size: 17px; font-weight: 600; }
+#btnRender:hover { background: linear-gradient(#45d85a, #2bb046); }
+#btnRender:disabled { background: #3a3a3a; }
+button.secondary { background: #444; }
+
+/* messages + results */
+.msgs { max-width: 900px; margin: 18px auto 0; background: #1b1b1b; border: 1px solid var(--line); border-radius: 10px; padding: 10px 16px; }
+.msg { padding: 3px 0; font-family: Consolas, monospace; font-size: 13px; }
+.msg.ok { color: var(--acc); }
+.msg.warn { color: var(--warn); }
+.msg.err { color: var(--err); }
+.group { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 14px 18px; margin-top: 18px; }
+.group b { color: #fff; font-size: 17px; }
+.tabs { margin: 10px 0; display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.tab { background: #32324a; color: var(--acc2); padding: 7px 16px; }
 .tab:hover { background: #44445f; }
-.tab.on { background: #3c3cf0; color: #fff; }
-.tabs a { color: #999; font-size: 12px; margin-left: 10px; }
-.tabs .fs { background: #444; padding: 6px 10px; font-size: 12px; }
-.frames { background: #000; }
+.tab.on { background: var(--blue); color: #fff; }
+.tabs a { color: var(--mut); font-size: 12px; margin-left: 10px; }
+.tabs .fs { background: #444; padding: 7px 12px; font-size: 13px; }
+.frames { background: #000; border-radius: 8px; overflow: hidden; }
 .frames iframe { width: 100%; height: 82vh; border: 1px solid #444; display: none; background: #000; }
 .frames iframe.on { display: block; }
 .frames:fullscreen iframe { height: 100vh; border: 0; }
-.info { color: #888; font-size: 12px; margin-top: 14px; max-width: 700px; }
 
-#companionModal[hidden] { display:none; }
-#companionModal { position:fixed; inset:0; z-index:9999; display:flex; align-items:center; justify-content:center;
-    padding:20px; background:rgba(0,0,0,.72); }
-#companionDialog { width:min(520px,100%); box-sizing:border-box; padding:22px; border:1px solid #555;
-    border-radius:8px; background:#252525; box-shadow:0 12px 40px #000; }
-#companionDialog h2 { margin:0 0 12px; color:#e6c46e; font-size:19px; }
-#companionDialog p { line-height:1.5; }
-#companionDialog code { color:#6ee6e6; }
-#companionDialog .actions { display:flex; gap:8px; justify-content:flex-end; flex-wrap:wrap; margin-top:20px; }
-#companionDialog button.secondary { background:#444; }
+/* features / steps */
+.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 14px; }
+.feat { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 18px; }
+.feat .ic { font-size: 26px; }
+.feat h3 { margin: 6px 0 4px; color: #fff; font-size: 17px; }
+.feat p { margin: 0; color: #b8b8b8; font-size: 14px; }
+.steps { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 14px; counter-reset: s; }
+.step { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 18px 18px 18px 64px; position: relative; }
+.step::before { counter-increment: s; content: counter(s); position: absolute; left: 16px; top: 16px; width: 34px; height: 34px; border-radius: 50%;
+                background: var(--acc); color: #0b2a10; font-weight: 700; display: flex; align-items: center; justify-content: center; }
+.step b { color: #fff; }
+.note { text-align: center; color: var(--mut); font-size: 13px; margin-top: 16px; }
 
+/* footer */
+footer { margin-top: 50px; padding-top: 22px; border-top: 1px solid var(--line); text-align: center; color: var(--mut); font-size: 13px; }
+footer .links { margin: 8px 0; display: flex; gap: 8px 22px; justify-content: center; flex-wrap: wrap; font-size: 14px; }
+footer .small { max-width: 820px; margin: 10px auto 0; font-size: 12px; color: #777; }
+
+/* companion dialog */
+#companionModal[hidden] { display: none; }
+#companionModal { position: fixed; inset: 0; z-index: 9999; display: flex; align-items: center; justify-content: center; padding: 20px; background: rgba(0,0,0,.72); }
+#companionDialog { width: min(520px, 100%); padding: 22px; border: 1px solid #555; border-radius: 12px; background: #252525; box-shadow: 0 12px 40px #000; }
+#companionDialog h2 { margin: 0 0 12px; color: var(--warn); font-size: 19px; }
+#companionDialog p { line-height: 1.5; }
+#companionDialog code { color: var(--acc2); }
+#companionDialog .actions { display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wrap; margin-top: 20px; }
+#companionDialog button.secondary { background: #444; }
 </style>
 </head>
 <body>
-<h1>EaglePCBView3D - Web</h1>
-<form method="post" enctype="multipart/form-data" id="frm">
-    <input type="hidden" name="action" value="render">
-    <p>Select your EAGLE <b>.brd</b> and/or <b>.sch</b> files. Matching files with the same base name are paired automatically.
-       If a companion is missing, you can select it when prompted or continue without it.</p>
-    <div class="row">
-        <button type="button" id="btnFiles">Add files...</button>
+<div class="wrap">
+
+<header class="hero">
+    <h1>Eagle<span>PCB</span>View3D</h1>
+    <p class="tag">View your <b>Autodesk EAGLE</b> boards and schematics right in the browser: interactive 2D layers
+       and a real 3D board, with nothing to install.</p>
+    <div class="badges">
+        <span class="badge">Free &amp; open source (MIT)</span>
+        <span class="badge">No install, no account</span>
+        <span class="badge">Files deleted after rendering</span>
     </div>
-    <div id="drop">...or drop the files here</div>
-    <input type="file" name="eagle_file[]" id="f" multiple style="display:none">
-    <input type="file" id="filesIn" accept=".brd,.sch,.xml" multiple style="display:none">
-    <div id="projects"></div>
-    <button type="submit" id="btnRender" disabled>Render</button>
-</form>
+</header>
+
+<section class="card narrow">
+    <form method="post" enctype="multipart/form-data" id="frm">
+        <input type="hidden" name="action" value="render">
+        <div id="drop">
+            <svg viewBox="0 0 64 64" fill="none" stroke="#6ee66e" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M32 44V14M20 26l12-12 12 12"/><path d="M10 40v10a4 4 0 0 0 4 4h36a4 4 0 0 0 4-4V40"/>
+            </svg>
+            <span class="big">Drop your <b>.brd</b> and <b>.sch</b> files here</span>
+            <div class="row"><button type="button" id="btnFiles">Choose files...</button></div>
+            <small>Pick both files of a project (same name, e.g. <code>clock.brd</code> + <code>clock.sch</code>):
+                   they are paired automatically. A single file works too.</small>
+        </div>
+        <input type="file" name="eagle_file[]" id="f" multiple style="display:none">
+        <input type="file" id="filesIn" accept=".brd,.sch,.xml" multiple style="display:none">
+        <div id="projects"></div>
+        <div class="actions"><button type="submit" id="btnRender" disabled>Render</button></div>
+    </form>
+</section>
 
 <div id="companionModal" hidden role="dialog" aria-modal="true" aria-labelledby="companionTitle">
     <div id="companionDialog">
@@ -1863,7 +1971,7 @@ button:disabled { background: #444; color: #888; cursor: default; }
 <input type="file" id="companionIn" accept=".brd,.sch" style="display:none">
 
 <?php if ($messages): ?>
-<div style="margin-top: 20px;">
+<div class="msgs">
     <?php foreach ($messages as $m):
         if (strpos($m, 'error') !== false || strpos($m, 'FAILED') !== false || strpos($m, 'EXCEPTION') !== false) $cls = 'err';
         elseif (strpos($m, 'note:') === 0) $cls = 'warn';
@@ -1896,15 +2004,47 @@ button:disabled { background: #444; color: #888; cursor: default; }
 <?php endforeach; ?>
 <?php endif; ?>
 
-<div class="info">
-    <p><b>Pairing:</b> <code>test.sch</code> and <code>test.brd</code> are matched automatically by base name when both
-    are selected. Browser security prevents this page from reading an unselected companion file from your disk.
-    If a companion is missing, you can load it through the standard file picker, ignore it, or cancel before rendering.
-    Browser security prevents automatic reading of an unselected local file. Folder selection is not used.</p>
-    <p><b>Privacy:</b> uploaded files are deleted from the server as soon as they are rendered; the generated viewers
-    are deleted when you leave or close this page (and, at the latest, after 2 hours).
-    Boards have a 2D view with an embedded 3D view (requires a closed outline on layer 20).</p>
-    <p>Place <code>three.min.js</code> and <code>TrackballControls.js</code> next to this script (or in <code>output/</code>).</p>
+<h2 class="sec">What you get</h2>
+<p class="sub">Everything you need to inspect an EAGLE design without opening EAGLE.</p>
+<div class="grid">
+    <div class="feat"><div class="ic">&#128396;</div><h3>2D board viewer</h3>
+        <p>Pan, zoom, mirror the board and switch every EAGLE layer on or off. Stop mask, keepout and restrict areas are hatched like in EAGLE.</p></div>
+    <div class="feat"><div class="ic">&#129517;</div><h3>Interactive 3D</h3>
+        <p>Rotate the board on all axes with real drilled holes, solder mask colors (green, red, blue, yellow, white, black, ...), glossy or matte finish and gold, tin or copper pads. The 3D follows the layers you enabled.</p></div>
+    <div class="feat"><div class="ic">&#128196;</div><h3>Schematic viewer</h3>
+        <p>Every sheet of your <code>.sch</code> with layer toggles, and one-click switching between schematic and board.</p></div>
+    <div class="feat"><div class="ic">&#128279;</div><h3>Automatic pairing</h3>
+        <p><code>test.brd</code> and <code>test.sch</code> are matched by file name and shown together. If a companion file is missing you are told, and you can load it or continue without it.</p></div>
+    <div class="feat"><div class="ic">&#128274;</div><h3>Private by design</h3>
+        <p>Uploaded files are deleted as soon as they are rendered. The generated viewers are removed when you leave the page.</p></div>
+    <div class="feat"><div class="ic">&#128187;</div><h3>Open source</h3>
+        <p>Source code on GitHub under the MIT license, including the original Python desktop version that produces standalone HTML files.</p></div>
+</div>
+
+<h2 class="sec">How it works</h2>
+<p class="sub">Three steps, no registration.</p>
+<div class="steps">
+    <div class="step"><b>Add your files</b><br>Drop or choose the <code>.brd</code> and/or <code>.sch</code> exported by EAGLE (XML format).</div>
+    <div class="step"><b>Press Render</b><br>The files are converted to interactive viewers and deleted from the server right away.</div>
+    <div class="step"><b>Explore</b><br>Toggle layers, flip the board and press <b>3D rendering</b> to see it as a real board.</div>
+</div>
+<p class="note">Notes: the 3D view needs a closed board outline on layer 20 (parts drawn inside component packages are included);
+   component 3D models are not shown. Supports EAGLE files saved in XML format.</p>
+
+<footer>
+    <div><b><?= APP_NAME ?></b> v<?= APP_VERSION ?> &middot; by
+        <a href="<?= URL_AUTHOR ?>" target="_blank" rel="noopener">Arky - amigatronic.com</a></div>
+    <div class="links">
+        <a href="<?= URL_REPO ?>" target="_blank" rel="noopener">GitHub repository</a>
+        <a href="<?= URL_ONLINE ?>" target="_blank" rel="noopener">Online version</a>
+        <a href="<?= URL_AUTHOR ?>" target="_blank" rel="noopener">amigatronic.com</a>
+    </div>
+    <div class="small">Released under the MIT License. This software is provided &quot;AS IS&quot;, without warranty of any
+        kind, and there is no guarantee that it is free of bugs beyond the known limits above; the 2D/3D output is a
+        visual aid and must not replace your original EAGLE files or manufacturing data. Found a bug? Please report
+        it on the GitHub repository or through amigatronic.com. 3D rendering is powered by three.js (MIT License).</div>
+</footer>
+
 </div>
 
 <script>
@@ -1999,7 +2139,10 @@ function closeCompanionDialog() {
 }
 
 document.getElementById('companionLoad').addEventListener('click', () => {
-    if (pendingCompanion) companionIn.click();
+    if (pendingCompanion) {
+        companionIn.accept = '.' + pendingCompanion.ext;   // the picker lists only the missing type (.sch or .brd)
+        companionIn.click();
+    }
 });
 document.getElementById('companionIgnore').addEventListener('click', () => {
     closeCompanionDialog();
@@ -2017,8 +2160,7 @@ companionIn.addEventListener('change', () => {
     const expected = (pendingCompanion.name + '.' + pendingCompanion.ext).toLowerCase();
     if (file.name.toLowerCase() !== expected) {
         companionIn.value = '';
-        window.alert('You selected "' + file.name + '". The required file is "' + expected + '".');
-        companionIn.click();
+        window.alert('You selected "' + file.name + '". The required file is "' + expected + '". Press "Load Companion" to try again.');
         return;
     }
     addFiles([file]);
@@ -2040,7 +2182,11 @@ document.getElementById('frm').addEventListener('submit', ev => {
     }
 });
 
-// File-only drag and drop. Directory traversal is intentionally disabled.
+// File-only drag and drop (directory traversal is intentionally disabled).
+// dragover must be cancelled, otherwise the browser never fires "drop" and opens the file instead.
+['dragenter', 'dragover'].forEach(e => drop.addEventListener(e, ev => { ev.preventDefault(); drop.classList.add('over'); }));
+['dragleave', 'drop'].forEach(e => drop.addEventListener(e, ev => { ev.preventDefault(); drop.classList.remove('over'); }));
+['dragover', 'drop'].forEach(e => window.addEventListener(e, ev => ev.preventDefault()));   // a miss must not open the file
 drop.addEventListener('drop', ev => {
     const files = [...(ev.dataTransfer.files || [])].filter(f => /\.(brd|sch|xml)$/i.test(f.name));
     addFiles(files);
