@@ -68,7 +68,7 @@ Open `eagle_pcb_view_3d.php` in the browser (for example `http://localhost/eagle
 
 The outline builder works on the segments of layer 20 (wires, arcs, rectangles, polygons, circles), including those inside component packages: end points are snapped together (tolerance 0.05 mm, then 0.2 and 0.5 mm), segments are split where they touch or cross, dangling pieces are removed, and closed loops are extracted (the largest is the board, inner ones are cut-outs). If nothing closes, the 3D view is skipped and the message lists where the open ends are, for example `open ends near: (40, 0) mm, (43, 0) mm`.
 
-## Desktop edition (`eagle_view.py`)
+## Desktop edition (`eagle_pcb_view_3d.py`)
 
 ### Requirements
 
