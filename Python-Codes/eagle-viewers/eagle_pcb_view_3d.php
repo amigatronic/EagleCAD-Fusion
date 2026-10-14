@@ -1664,6 +1664,42 @@ function rrmdir($dir) {
     @rmdir($dir);
 }
 
+// Daily usage caps (quiet safety net against abuse): renders per client and for the whole site
+const DAILY_LIMIT_PER_IP = 30;
+const DAILY_LIMIT_GLOBAL = 500;
+
+// True when this render may proceed (and is counted); false when a daily cap is reached.
+// Counters live in output/rate-YYYYMMDD.php: the file starts with an exit statement, so even if it is requested
+// it shows nothing, and it stores only a hash of the client address. Older days are removed automatically.
+function daily_quota_ok($root) {
+    if (!is_dir($root)) @mkdir($root, 0777, true);
+    $file = $root . '/rate-' . date('Ymd') . '.php';
+    foreach (glob($root . '/rate-*.php') ?: [] as $old) { if ($old !== $file) @unlink($old); }
+    $fp = @fopen($file, 'c+');
+    if (!$fp) return true;                       // a bookkeeping problem must never block the service
+    flock($fp, LOCK_EX);
+    $data = ['global' => 0, 'ips' => []];
+    $raw = (string)stream_get_contents($fp);
+    $nl = strpos($raw, "\n");
+    if ($nl !== false) {
+        $j = json_decode(substr($raw, $nl + 1), true);
+        if (is_array($j) && isset($j['global'], $j['ips']) && is_array($j['ips'])) $data = $j;
+    }
+    $key = hash('sha256', ($_SERVER['REMOTE_ADDR'] ?? '') . '|' . __FILE__);
+    $mine = (int)($data['ips'][$key] ?? 0);
+    $ok = ((int)$data['global'] < DAILY_LIMIT_GLOBAL) && ($mine < DAILY_LIMIT_PER_IP);
+    if ($ok) {
+        $data['global'] = (int)$data['global'] + 1;
+        $data['ips'][$key] = $mine + 1;
+        ftruncate($fp, 0);
+        rewind($fp);
+        fwrite($fp, "<?php http_response_code(404); exit; ?>\n" . json_encode($data));
+    }
+    flock($fp, LOCK_UN);
+    fclose($fp);
+    return $ok;
+}
+
 function purge_old_runs($root, $max_age = RUN_MAX_AGE) {
     foreach (glob($root . '/run-*', GLOB_ONLYDIR) ?: [] as $d) {
         if (time() - (int)@filemtime($d) >= $max_age) rrmdir($d);
@@ -1763,6 +1799,8 @@ if ($action === 'render' && isset($_FILES['eagle_file'])) {
         $messages[] = "error: no file selected";
     } elseif (count($ups) > MAX_UPLOAD_FILES) {
         $messages[] = "error: too many files (maximum " . MAX_UPLOAD_FILES . ")";
+    } elseif (!daily_quota_ok($root)) {
+        $messages[] = "error: the daily limit has been reached - please try again tomorrow";
     } else {
         if (!is_dir($root)) @mkdir($root, 0777, true);
         if (!is_file($root . '/.htaccess')) @file_put_contents($root . '/.htaccess', "Options -Indexes\n");
@@ -1825,7 +1863,7 @@ if ($action === 'render' && isset($_FILES['eagle_file'])) {
 }
 ?>
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
 <meta charset="utf-8">
 <title>EaglePCBView3D - View EAGLE .brd and .sch files online (2D + 3D)</title>
