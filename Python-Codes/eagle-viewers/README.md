@@ -18,6 +18,11 @@ View **Autodesk EAGLE** boards (`.brd`) and schematics (`.sch`, XML format) with
 
 Source code: [GitHub - EagleCAD-Fusion / Python-Codes / eagle-viewers](https://github.com/amigatronic/EagleCAD-Fusion/tree/main/Python-Codes/eagle-viewers)
 
+![2D Render](screenshots/2D_render.png)
+![3D Render](screenshots/3D_render.png)
+![Schematic Render](screenshots/schematic.png)
+
+
 ## Features (both editions)
 
 - **2D viewer** in a single `.htm`: wheel zoom, drag to pan, one checkbox per layer, `Fit`, `All`, `None`, and `Flip` (mirrors the board view).
