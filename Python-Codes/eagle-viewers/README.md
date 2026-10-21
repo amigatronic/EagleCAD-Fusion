@@ -77,7 +77,7 @@ The outline builder works on the segments of layer 20 (wires, arcs, rectangles, 
 
 ### Requirements
 
-- Windows 10 and Python 3.8 or newer. Only the standard library is needed (`tkinter` ships with the Windows Python installer).
+- Windows 10+ and Python 3.8 or newer. Only the standard library is needed (`tkinter` ships with the Windows Python installer).
 - A browser with WebGL for the 3D view.
 - Nothing to download: three.js r147 and TrackballControls are embedded (compressed) at the end of the script.
 
