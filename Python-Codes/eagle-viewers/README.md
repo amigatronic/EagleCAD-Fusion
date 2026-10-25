@@ -7,7 +7,7 @@ View **Autodesk EAGLE** boards (`.brd`) and schematics (`.sch`, XML format) with
 | | **Web edition** (`eagle_pcb_view_3d.php`) | **Desktop edition** (`eagle_view.py`) |
 | --- | --- | --- |
 | Runs on | a PHP web server (XAMPP locally, or online) | your PC, Python only |
-| Online demo | <https://aviotronic.altervista.org/eagleviewer/> | - |
+| Online demo | <https://eaglepcbview3d.free.nf/> | - |
 | Input | upload from the browser (drop or choose files) | file picker (GUI) or command line |
 | Companion `.sch`/`.brd` | matched by file name among the selected files; a dialog offers to load a missing one | found automatically in the **same folder** on your disk |
 | Output | viewers shown in the page (tabs, fullscreen) | `.svg` + standalone `.htm` files written to a folder |
