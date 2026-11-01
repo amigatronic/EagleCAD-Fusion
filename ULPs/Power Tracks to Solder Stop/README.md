@@ -27,6 +27,7 @@ during **HASL** the bare copper is tinned and the power tracks are reinforced.
 - [Documentation](#documentation)
 - [Repository layout](#repository-layout)
 - [Contributing](#contributing)
+- [Trademarks](#trademarks)
 - [License](#license)
 
 ## Why
@@ -230,6 +231,10 @@ Issues and pull requests are welcome. When reporting a problem please include:
 - The exact error message and line number, if any
 - The values of the dialog options and the summary shown after *Generate*
 - A screenshot of the area involved, with layers 1/16 and 29/30 visible
+
+## Trademarks
+
+EAGLE and Fusion 360 are trademarks or registered trademarks of Autodesk, Inc. and/or its affiliates. Windows is a trademark of the Microsoft group of companies. This project is independent: it is not affiliated with, sponsored or endorsed by Autodesk or Microsoft. The names are used only to state compatibility.
 
 ## License
 
