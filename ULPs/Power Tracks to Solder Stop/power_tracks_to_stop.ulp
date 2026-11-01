@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2026 Furio
+// Copyright (c) 2026 Arky - amigatronic.com
 //
 // power_tracks_to_stop.ulp  -  version 1.0.0
 // Copies the copper of selected signals (wires and pours) from Top/Bottom to the
