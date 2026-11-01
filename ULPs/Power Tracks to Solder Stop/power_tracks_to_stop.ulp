@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
-// Copyright (c) 2026 Arky - amigatronic.com
+// Copyright (c) 2026 Furio
 //
-// power_tracks_to_stop.ulp  -  version 1.0.0
+// power_tracks_to_stop.ulp  -  version 1.1.0
 // Copies the copper of selected signals (wires and pours) from Top/Bottom to the
 // tStop/bStop layers, so the solder mask is opened above it and HASL tins the copper.
 // Works in the board editor of EAGLE 9.x and Fusion 360 Electronics.
@@ -28,6 +28,7 @@ string SortLbl  = "";
 string ColNames[] = { "Signal", "Top", "Bottom", "Min w", "Max w", "Poly" };
 
 int    PageSize = 16;   // rows per page, change here if you want more/less
+int    RunRatsnest = 1; // 1 = run RATSNEST when the ULP starts, so pours are calculated; 0 = do not
 int    Page     = 0;
 int    Slot[];          // checkbox states of the current page
 string LName[];         // labels of the current page
@@ -129,7 +130,8 @@ void setupHelp(void) {
     "<b>Polygons (pours)</b>: copied only if <i>Include polygons</i> is on. The ULP reads "
     "the poured copper (it follows the isolation around other signals), fills it with a "
     "hairline polygon and draws the border with round wires as wide as the pour width. "
-    "The pour must be calculated: run RATSNEST before. If it is not, the polygon outline "
+    "The pour must be calculated: RATSNEST is run automatically when the ULP starts "
+    "(set RunRatsnest = 0 at the top of the file to disable it). If a pour is still not calculated, the polygon outline "
     "is used and the summary tells you.<p>"
     "<b>Not copied</b>: pads and vias (the solder stop already opens them).";
 
@@ -804,6 +806,11 @@ if (!board) {
   dlgMessageBox("Run this ULP from the board editor.");
   exit(EXIT_FAILURE);
 }
+
+// A ULP cannot run an EAGLE command and then continue, so it ends here, lets EAGLE run
+// RATSNEST (which calculates the pours) and starts itself again. The argument avoids a loop.
+if (RunRatsnest && !(argc > 1 && argv[1] == "ratsnest-done"))
+  exit("RATSNEST; RUN '" + argv[0] + "' ratsnest-done;");
 
 collect();
 if (nSig == 0) {
