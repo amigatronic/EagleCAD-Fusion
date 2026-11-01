@@ -4,6 +4,13 @@ All notable changes to this project are documented in this file.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and the project uses
 [Semantic Versioning](https://semver.org/).
 
+## [1.1.0] - 2026-11-01
+
+### Added
+- `RATSNEST` is executed automatically when the ULP starts, so pours are always calculated before the dialog
+  opens. The ULP ends, lets EAGLE run the command and starts itself again with an argument that prevents a loop.
+  Set `RunRatsnest = 0` at the top of the file to disable it.
+
 ## [1.0.0] - 2026-11-01
 
 ### Added

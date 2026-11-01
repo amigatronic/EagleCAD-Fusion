@@ -59,7 +59,7 @@ with many isolation cutouts. This ULP does it automatically for the signals you 
 
 - Windows 10
 - EAGLE 9.x or Fusion 360 Electronics, with the **board editor** open
-- Pours calculated (`RATSNEST`) if you want them copied with their isolation cutouts
+- Nothing else: the ULP runs `RATSNEST` itself at start so that the pours are calculated (can be disabled)
 
 ## Installation
 
@@ -78,7 +78,7 @@ with many isolation cutouts. This ULP does it automatically for the signals you 
 
 ![Workflow](docs/images/workflow.png)
 
-1. Save the board. If it has pours, run `RATSNEST` so that they are calculated.
+1. Save the board. The ULP runs `RATSNEST` by itself at start, so the pours are calculated and the dialog opens right after.
 2. Run the ULP. The dialog lists the signals routed on Top/Bottom copper.
 3. Tick the signals to expose. Sorting by **Max w** (descending) brings the widest tracks first, and
    **Width >=** selects them in one click.
@@ -116,6 +116,13 @@ with many isolation cutouts. This ULP does it automatically for the signals you 
 | Script file | board folder | - | Where `power_tracks_to_stop.scr` is written. |
 
 The number of rows per page is the `PageSize` constant at the top of the ULP.
+
+### Automatic RATSNEST
+
+A ULP cannot run an EAGLE command and then continue. At start the program therefore ends, lets EAGLE execute
+`RATSNEST`, and launches itself again with an extra argument that prevents a loop, so the dialog appears a moment
+later. `RATSNEST` recalculates the pours and marks the board as modified. To disable it, set `RunRatsnest = 0` at the
+top of the ULP and run `RATSNEST` yourself.
 
 ## How it works
 
@@ -164,7 +171,7 @@ WIRE 0.6556 (10.0000 10.0000) (50.0000 10.0000);
   undo steps.
 - **Check the mask web.** The opening is deliberately a little wider than the copper. Ask your manufacturer for the
   minimum solder mask web between exposed copper and neighbouring pads, and lower the auto grow if needed.
-- **Calculate pours first** (`RATSNEST`) and regenerate after any change to the pours or to nearby copper.
+- **Pours are recalculated at every start** (`RATSNEST` runs automatically). Regenerate after any change to the pours or to nearby copper.
 - **Do not generate the same pours twice** without removing the previous stop polygons: duplicate wires are
   detected, polygons are not.
 - **Inspect the result** with only layers 1/16 and 29/30 visible, and look at the Gerber output before ordering.
@@ -184,7 +191,7 @@ WIRE 0.6556 (10.0000 10.0000) (50.0000 10.0000);
 |---|---|---|
 | Message: run from the board editor | Started from another editor | Open the board and run it there |
 | A signal with only a pour is missing | The pour is not on layer 1 or 16 | Check the layer of the pour |
-| Warning about uncalculated polygons | The pour was not calculated, only the outline was used | Run `RATSNEST` and generate again |
+| Warning about uncalculated polygons | The pour was not calculated, only the outline was used | Run `RATSNEST` by hand (the automatic run may be disabled) and generate again |
 | Isolation cutouts covered by the opening | *Follow isolation cutouts* is off, or outline fallback | Turn it on and calculate the pours |
 | Thin strip of copper still under mask | Grow too small | Increase the auto grow fraction or the extra grow |
 | Opening reaches neighbouring pads | Grow too large for the clearance | Lower the auto grow fraction and the extra grow |
