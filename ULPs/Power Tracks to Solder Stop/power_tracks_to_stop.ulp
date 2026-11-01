@@ -1,1 +1,957 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 Furio
+//
+// power_tracks_to_stop.ulp  -  version 1.0.0
+// Copies the copper of selected signals (wires and pours) from Top/Bottom to the
+// tStop/bStop layers, so the solder mask is opened above it and HASL tins the copper.
+// Works in the board editor of EAGLE 9.x and Fusion 360 Electronics.
 
+#usage "<b>Power tracks to solder stop</b><p>"
+       "Lists the signals routed on Top/Bottom copper and copies the selected ones "
+       "(tracks and pours) to tStop (29) / bStop (30), exposing the copper so that "
+       "HASL tinning reinforces it. Run from the board editor. "
+       "Press <i>Help</i> in the dialog for details."
+
+// ---------------------------------------------------------------- globals
+string SigName[];
+int    SigTop[];
+int    SigBot[];
+int    SigPoly[];
+real   SigMin[];
+real   SigMax[];
+int    SigSel[];
+int    nSig = 0;
+
+int    SortCol  = 0;    // 0=Signal 1=Top 2=Bottom 3=Min w 4=Max w 5=Poly
+int    SortDesc = 0;
+string SortLbl  = "";
+string ColNames[] = { "Signal", "Top", "Bottom", "Min w", "Max w", "Poly" };
+
+int    PageSize = 16;   // rows per page, change here if you want more/less
+int    Page     = 0;
+int    Slot[];          // checkbox states of the current page
+string LName[];         // labels of the current page
+string LTop[];
+string LBot[];
+string LPoly[];
+string LMin[];
+string LMax[];
+string PageLbl = "";
+
+string Status    = "";
+string Filter    = "";
+string OutFile   = "";
+real   Margin    = 0.0;
+real   MinW      = 0.5;
+int    IncPoly   = 0;
+int    PolyPoured = 1;       // follow the real poured copper (isolation cutouts)
+real   PolyEdge  = 0.001;    // hairline edge of the fill polygons (mm); the border is drawn with wires
+real   PolyGrow  = 0.0;      // extra opening per side around poured copper (mm), added to the auto grow
+int    AutoGrow  = 1;        // grow the opening automatically from the clearance
+real   AutoFactor = 0.5;     // fraction of the clearance used as grow per side
+real   repClr    = 0.0;      // reported: clearance used for the last polygon (mm)
+real   repGrow   = 0.0;      // reported: total grow per side for the last polygon (mm)
+real   ArcTol    = 0.005;    // max distance between an arc and its segments (mm)
+
+int nWires       = 0;
+int nDup         = 0;
+int nPoly        = 0;
+int nPolyOutline = 0;
+
+// polygon geometry buffers (mm)
+real PX[];
+real PY[];
+int  nPts = 0;
+int  LStart[];
+int  LCount[];
+real LArea[];
+int  LDepth[];
+int  LParent[];
+int  nLoops = 0;
+int  inLoop = 0;
+real fx = 0.0;
+real fy = 0.0;
+real lx = 0.0;
+real ly = 0.0;
+real KX[];
+real KY[];
+int  nK = 0;
+real HX[];
+real HY[];
+int  nH = 0;
+real TX[];
+real TY[];
+int  CandA[];
+real CandD[];
+int  Tried[];
+int  nBadBridge = 0;
+
+real PI_V = 3.14159265358979;
+
+string HelpPages[];
+int    nHelp = 0;
+
+void setupHelp(void) {
+  HelpPages[0] =
+    "<b>Power tracks to solder stop</b> (1/5)<p>"
+    "Copies the copper of the selected signals onto the solder stop layers, so that the "
+    "solder mask is opened above it. During HASL the bare copper is tinned, which "
+    "reinforces power tracks and pours.<p>"
+    "Top copper (layer 1) is copied to <b>tStop (29)</b>.<br>"
+    "Bottom copper (layer 16) is copied to <b>bStop (30)</b>.<p>"
+    "<b>Workflow</b><br>"
+    "1. Run the ULP from the board editor.<br>"
+    "2. Tick the signals to expose.<br>"
+    "3. Check the options (the defaults suit most boards).<br>"
+    "4. Press <i>Generate</i>: a script is written and executed.<br>"
+    "5. Inspect layers 29/30 and run DRC if you wish.";
+
+  HelpPages[1] =
+    "<b>Signal list and selection</b> (2/5)<p>"
+    "The list shows every signal that has wires or pours on Top/Bottom copper, with the "
+    "number of wires on Top and Bottom, the number of polygons (<i>Poly</i>) and the "
+    "minimum and maximum wire width.<p>"
+    "<b>Checkbox</b>: tick a signal to expose it. Use <i>Prev/Next</i> to change page; "
+    "ticks are kept across pages.<br>"
+    "<b>Column headers</b>: click to sort, click again to reverse. Sorting by "
+    "<i>Max w</i> (descending) brings the widest tracks first.<p>"
+    "<b>Selection tools</b> (they act on ALL signals, not only the visible page):<br>"
+    "- <i>Select all / Clear all / Invert</i><br>"
+    "- <i>Width &gt;=</i>: adds the signals with a wire at least that wide<br>"
+    "- <i>Name contains</i>: adds the signals whose name contains the text (any case)";
+
+  HelpPages[2] =
+    "<b>What is copied</b> (3/5)<p>"
+    "<b>Wires</b>: every wire of the selected signals on Top/Bottom is copied with the same "
+    "geometry (arcs included) and width, plus the wire margin. A wire already present "
+    "on the stop layer with identical geometry is skipped, so wires can be generated "
+    "again safely.<p>"
+    "<b>Polygons (pours)</b>: copied only if <i>Include polygons</i> is on. The ULP reads "
+    "the poured copper (it follows the isolation around other signals), fills it with a "
+    "hairline polygon and draws the border with round wires as wide as the pour width. "
+    "The pour must be calculated: run RATSNEST before. If it is not, the polygon outline "
+    "is used and the summary tells you.<p>"
+    "<b>Not copied</b>: pads and vias (the solder stop already opens them).";
+
+  HelpPages[3] =
+    "<b>Options</b> (4/5)<p>"
+    "<i>Wire margin per side</i>: extra width added to each wire (not to polygons).<br>"
+    "<i>Include polygons</i>: also copy the pours of the selected signals.<br>"
+    "<i>Follow isolation cutouts</i>: use the real poured copper. If off, the polygon "
+    "outline is used and the isolation around other signals is NOT respected.<br>"
+    "<i>Auto grow from clearance</i>: widens the opening around each pour by a fraction "
+    "of its clearance (the pour's isolate value, else the net class clearance). The "
+    "opening therefore stays inside the isolation gap.<br>"
+    "<i>Auto grow (fraction)</i>: 0.5 = half the clearance per side.<br>"
+    "<i>Extra grow per side</i>: manual extra opening, added to the automatic one.<br>"
+    "<i>Arc tolerance</i>: maximum distance between a pour arc and the segments that "
+    "approximate it. Lower = smoother, more vertices.<br>"
+    "<i>Script file</i>: where the .scr is written (default: next to the board).";
+
+  HelpPages[4] =
+    "<b>Notes and troubleshooting</b> (5/5)<p>"
+    "- Save the board before generating. To revert, use undo or reload the saved file "
+    "(a long script can produce many undo steps).<br>"
+    "- Polygons are NOT checked for duplicates: do not generate twice the same pours "
+    "without removing the previous stop polygons first.<br>"
+    "- The opening is wider than the copper by design. Keep enough solder mask between "
+    "the exposed copper and neighbouring pads: check the minimum mask web with your "
+    "manufacturer and lower the auto grow if needed.<br>"
+    "- Large pours produce many vertices and take a few seconds to process.<br>"
+    "- If the script file cannot be written (for example a cloud-only board in Fusion), "
+    "change <i>Script file</i> to a local folder.<br>"
+    "- Compile errors: report the exact message and line number.";
+
+  nHelp = 5;
+}
+
+void showHelp(void) {
+  int p = 0;
+  int r = 0;
+  while (p >= 0 && p < nHelp) {
+    r = dlgMessageBox(HelpPages[p], "< Back", "Next >", "Close");
+    if (r == 0) {
+      if (p > 0) p--;
+    }
+    else if (r == 1) {
+      if (p < nHelp - 1) p++;
+    }
+    else p = -1;
+  }
+}
+
+// ---------------------------------------------------------------- sorting
+
+// True if element a must come after element b with the current sort settings.
+int after(int a, int b) {
+  real va = 0.0;
+  real vb = 0.0;
+  if (SortCol == 1) { va = SigTop[a];  vb = SigTop[b]; }
+  if (SortCol == 2) { va = SigBot[a];  vb = SigBot[b]; }
+  if (SortCol == 3) { va = SigMin[a];  vb = SigMin[b]; }
+  if (SortCol == 4) { va = SigMax[a];  vb = SigMax[b]; }
+  if (SortCol == 5) { va = SigPoly[a]; vb = SigPoly[b]; }
+  if (SortCol > 0) {
+    if (va != vb) {
+      if (SortDesc) return va < vb;
+      return va > vb;
+    }
+    return strupr(SigName[a]) > strupr(SigName[b]);   // tie-break: name ascending
+  }
+  if (SortDesc) return strupr(SigName[a]) < strupr(SigName[b]);
+  return strupr(SigName[a]) > strupr(SigName[b]);
+}
+
+// Stable insertion sort of the parallel signal arrays (index sort, then permute).
+void sortSignals(void) {
+  int    idx[];
+  string tn[];
+  int    tt[];
+  int    tb[];
+  int    tp[];
+  real   tmn[];
+  real   tmx[];
+  int    ts[];
+  int    a = 0;
+  int    c = 0;
+  int    k = 0;
+  int    j = 0;
+  for (a = 0; a < nSig; a++) idx[a] = a;
+  for (a = 1; a < nSig; a++) {
+    k = idx[a];
+    j = a - 1;
+    while (j >= 0 && after(idx[j], k)) {
+      idx[j + 1] = idx[j];
+      j--;
+    }
+    idx[j + 1] = k;
+  }
+  for (c = 0; c < nSig; c++) {
+    tn[c]  = SigName[idx[c]];
+    tt[c]  = SigTop[idx[c]];
+    tb[c]  = SigBot[idx[c]];
+    tp[c]  = SigPoly[idx[c]];
+    tmn[c] = SigMin[idx[c]];
+    tmx[c] = SigMax[idx[c]];
+    ts[c]  = SigSel[idx[c]];
+  }
+  for (c = 0; c < nSig; c++) {
+    SigName[c] = tn[c];
+    SigTop[c]  = tt[c];
+    SigBot[c]  = tb[c];
+    SigPoly[c] = tp[c];
+    SigMin[c]  = tmn[c];
+    SigMax[c]  = tmx[c];
+    SigSel[c]  = ts[c];
+  }
+}
+
+// ---------------------------------------------------------------- signal list
+void collect(void) {
+  nSig = 0;
+  board(B) {
+    B.signals(S) {
+      int    t  = 0;
+      int    b  = 0;
+      int    pc = 0;
+      real   mn = 1000000.0;
+      real   mx = 0.0;
+      S.wires(W) {
+        if (W.layer == 1 || W.layer == 16) {
+          if (W.layer == 1) t++;
+          else b++;
+          real wmm = u2mm(W.width);
+          if (wmm < mn) mn = wmm;
+          if (wmm > mx) mx = wmm;
+        }
+      }
+      S.polygons(P) {
+        if (P.layer == 1 || P.layer == 16) pc++;
+      }
+      if (t + b + pc > 0) {
+        if (t + b == 0) {
+          mn = 0.0;
+          mx = 0.0;
+        }
+        SigName[nSig] = S.name;
+        SigTop[nSig]  = t;
+        SigBot[nSig]  = b;
+        SigPoly[nSig] = pc;
+        SigMin[nSig]  = mn;
+        SigMax[nSig]  = mx;
+        SigSel[nSig]  = 0;
+        nSig++;
+      }
+    }
+  }
+  sortSignals();
+}
+
+int nPages(void) {
+  return (nSig + PageSize - 1) / PageSize;
+}
+
+// Copy the checkbox states of the visible page back into SigSel.
+void commitPage(void) {
+  for (int r = 0; r < PageSize; r++) {
+    int idx = Page * PageSize + r;
+    if (idx < nSig) SigSel[idx] = Slot[r];
+  }
+}
+
+// Fill the visible page slots from the signal arrays.
+void loadPage(void) {
+  for (int r = 0; r < PageSize; r++) {
+    int idx = Page * PageSize + r;
+    if (idx < nSig) {
+      Slot[r]  = SigSel[idx];
+      LName[r] = SigName[idx];
+      sprintf(LTop[r],  "%d", SigTop[idx]);
+      sprintf(LBot[r],  "%d", SigBot[idx]);
+      sprintf(LPoly[r], "%d", SigPoly[idx]);
+      sprintf(LMin[r],  "%.3f", SigMin[idx]);
+      sprintf(LMax[r],  "%.3f", SigMax[idx]);
+    }
+    else {
+      Slot[r]  = 0;
+      LName[r] = "";
+      LTop[r]  = "";
+      LBot[r]  = "";
+      LPoly[r] = "";
+      LMin[r]  = "";
+      LMax[r]  = "";
+    }
+  }
+  sprintf(PageLbl, "Page %d / %d", Page + 1, nPages());
+  sprintf(SortLbl, "Sort: %s (%s)", ColNames[SortCol], SortDesc ? "desc" : "asc");
+}
+
+void updateStatus(void) {
+  int n = 0;
+  int w = 0;
+  int p = 0;
+  for (int i = 0; i < nSig; i++) {
+    if (SigSel[i]) {
+      n++;
+      w += SigTop[i] + SigBot[i];
+      p += SigPoly[i];
+    }
+  }
+  sprintf(Status, "Selected: %d of %d signals (%d wires, %d polygons)", n, nSig, w, p);
+}
+
+// Reload everything from SigSel (after bulk changes or page change).
+void refresh(void) {
+  loadPage();
+  updateStatus();
+  dlgRedisplay();
+}
+
+// Called when a column header is clicked: sort by it, click again to reverse.
+void onSort(int col) {
+  commitPage();
+  if (SortCol == col) SortDesc = !SortDesc;
+  else {
+    SortCol = col;
+    SortDesc = 0;
+  }
+  sortSignals();
+  Page = 0;
+  refresh();
+}
+
+// Called when a checkbox is clicked.
+void onCheck(void) {
+  commitPage();
+  updateStatus();
+  dlgRedisplay();
+}
+
+int countSelected(void) {
+  int n = 0;
+  for (int i = 0; i < nSig; i++) if (SigSel[i]) n++;
+  return n;
+}
+
+int sigIndex(string name) {
+  for (int i = 0; i < nSig; i++) if (SigName[i] == name) return i;
+  return -1;
+}
+
+// ---------------------------------------------------------------- wires
+// True if an identical wire already exists on the given layer.
+int stopWireExists(int lay, int x1, int y1, int x2, int y2, int w, real c) {
+  int found = 0;
+  board(B) {
+    B.wires(PW) {
+      if (PW.layer == lay && PW.width == w) {
+        if (PW.x1 == x1 && PW.y1 == y1 && PW.x2 == x2 && PW.y2 == y2 && PW.curve == c)
+          found = 1;
+        if (PW.x1 == x2 && PW.y1 == y2 && PW.x2 == x1 && PW.y2 == y1 && PW.curve == -c)
+          found = 1;
+      }
+    }
+  }
+  return found;
+}
+
+// ---------------------------------------------------------------- polygon geometry
+
+// Appends the intermediate points of an arc (endpoints excluded), curve in degrees.
+void addArcPoints(real x1, real y1, real x2, real y2, real cv) {
+  real dx = x2 - x1;
+  real dy = y2 - y1;
+  real d  = sqrt(dx * dx + dy * dy);
+  real th = cv * PI_V / 180.0;
+  real half = th / 2.0;
+  real sh = sin(abs(half));
+  if (d <= 0.0 || sh < 0.0001) return;
+  real r   = d / (2.0 * sh);
+  real h   = r * cos(half);
+  real sgn = 1.0;
+  if (th < 0.0) sgn = -1.0;
+  real cx = (x1 + x2) / 2.0 + (-dy / d) * h * sgn;
+  real cy = (y1 + y2) / 2.0 + ( dx / d) * h * sgn;
+  real vx = x1 - cx;
+  real vy = y1 - cy;
+  // step angle from the tolerance: smaller radius or tighter tolerance = more segments
+  real dth = 15.0 * PI_V / 180.0;
+  if (ArcTol > 0.0 && r > ArcTol) dth = 2.0 * acos(1.0 - ArcTol / r);
+  if (dth < 0.01) dth = 0.01;
+  int  n  = ceil(abs(th) / dth);
+  int  k  = 0;
+  real ph = 0.0;
+  if (n < 1) n = 1;
+  if (n > 720) n = 720;
+  for (k = 1; k < n; k++) {
+    ph = th * k / n;
+    PX[nPts] = cx + vx * cos(ph) - vy * sin(ph);
+    PY[nPts] = cy + vx * sin(ph) + vy * cos(ph);
+    nPts++;
+  }
+}
+
+void resetLoops(void) {
+  nPts = 0;
+  nLoops = 0;
+  inLoop = 0;
+}
+
+void closeLoop(void) {
+  LCount[nLoops] = nPts - LStart[nLoops];
+  nLoops++;
+  inLoop = 0;
+}
+
+// Feeds one wire (mm) of a contour; closed loops are detected automatically.
+void addContourWire(real x1, real y1, real x2, real y2, real cv) {
+  if (inLoop && (abs(x1 - lx) > 0.0005 || abs(y1 - ly) > 0.0005)) closeLoop();
+  if (!inLoop) {
+    LStart[nLoops] = nPts;
+    fx = x1;
+    fy = y1;
+    inLoop = 1;
+  }
+  PX[nPts] = x1;
+  PY[nPts] = y1;
+  nPts++;
+  if (cv != 0.0) addArcPoints(x1, y1, x2, y2, cv);
+  lx = x2;
+  ly = y2;
+  if (abs(x2 - fx) <= 0.0005 && abs(y2 - fy) <= 0.0005) closeLoop();
+}
+
+real loopArea(int s, int n) {
+  real a = 0.0;
+  int  i = 0;
+  int  j = n - 1;
+  for (i = 0; i < n; i++) {
+    a += PX[s + j] * PY[s + i] - PX[s + i] * PY[s + j];
+    j = i;
+  }
+  return a / 2.0;
+}
+
+int pointInLoop(real x, real y, int s, int n) {
+  int  inside = 0;
+  int  i = 0;
+  int  j = n - 1;
+  real xi = 0.0;
+  real yi = 0.0;
+  real xj = 0.0;
+  real yj = 0.0;
+  for (i = 0; i < n; i++) {
+    xi = PX[s + i];
+    yi = PY[s + i];
+    xj = PX[s + j];
+    yj = PY[s + j];
+    if (((yi > y) != (yj > y)) && (x < (xj - xi) * (y - yi) / (yj - yi) + xi))
+      inside = !inside;
+    j = i;
+  }
+  return inside;
+}
+
+// True if loop i lies inside loop j. Uses a vote over several vertices because
+// vertices of pinched/touching loops can sit exactly on the other boundary.
+int loopInside(int i, int j) {
+  int n = LCount[i];
+  int samples = n;
+  int votes = 0;
+  int k = 0;
+  int idx = 0;
+  if (samples > 7) samples = 7;
+  for (k = 0; k < samples; k++) {
+    idx = LStart[i] + (k * n) / samples;
+    if (pointInLoop(PX[idx], PY[idx], LStart[j], LCount[j])) votes++;
+  }
+  return votes * 2 > samples;
+}
+
+// Index in PX/PY of the k-th point of loop li, ccw=1 for counter-clockwise order.
+int ptIndex(int li, int ccw, int k) {
+  int fwd = 0;
+  if (ccw) fwd = (LArea[li] >= 0.0);
+  else     fwd = (LArea[li] <= 0.0);
+  if (fwd) return LStart[li] + k;
+  return LStart[li] + LCount[li] - 1 - k;
+}
+
+// True if segments AB and CD properly cross each other (touching does not count).
+int segCross(real ax, real ay, real bx, real by, real cx, real cy, real dx, real dy) {
+  real d1 = (bx - ax) * (cy - ay) - (by - ay) * (cx - ax);
+  real d2 = (bx - ax) * (dy - ay) - (by - ay) * (dx - ax);
+  real d3 = (dx - cx) * (ay - cy) - (dy - cy) * (ax - cx);
+  real d4 = (dx - cx) * (by - cy) - (dy - cy) * (bx - cx);
+  int  s1 = ((d1 > 1.0e-9 && d2 < -1.0e-9) || (d1 < -1.0e-9 && d2 > 1.0e-9));
+  int  s2 = ((d3 > 1.0e-9 && d4 < -1.0e-9) || (d3 < -1.0e-9 && d4 > 1.0e-9));
+  return s1 && s2;
+}
+
+// True if the bridge A-B lies entirely in copper: it crosses no contour edge and
+// its midpoint is inside the outer loop and outside every hole of that loop.
+int bridgeOk(real ax, real ay, real bx, real by, int outer) {
+  int  l = 0;
+  int  p = 0;
+  int  q = 0;
+  int  n = 0;
+  int  st = 0;
+  real mx = (ax + bx) / 2.0;
+  real my = (ay + by) / 2.0;
+  for (l = 0; l < nLoops; l++) {
+    st = LStart[l];
+    n  = LCount[l];
+    q  = n - 1;
+    for (p = 0; p < n; p++) {
+      if (segCross(ax, ay, bx, by, PX[st + q], PY[st + q], PX[st + p], PY[st + p])) return 0;
+      q = p;
+    }
+  }
+  if (!pointInLoop(mx, my, LStart[outer], LCount[outer])) return 0;
+  for (l = 0; l < nLoops; l++) {
+    if (LParent[l] == outer && LDepth[l] % 2 == 1 && LCount[l] >= 3)
+      if (pointInLoop(mx, my, LStart[l], LCount[l])) return 0;
+  }
+  return 1;
+}
+
+// Writes the polygons for all collected loops to the current output file.
+// Outer loops become polygons; holes are joined to their parent with a zero-width bridge.
+int emitLoops(int lay) {
+  int  emitted = 0;
+  int  i = 0;
+  int  h = 0;
+  int  k = 0;
+  int  m = 0;
+  int  a = 0;
+  int  b = 0;
+  int  ia = 0;
+  int  ib = 0;
+  int  idx = 0;
+  int  nT = 0;
+  int  t = 0;
+  int  bb = 0;
+  real bd = 0.0;
+  real best = 0.0;
+  real dd = 0.0;
+
+  for (i = 0; i < nLoops; i++) LArea[i] = loopArea(LStart[i], LCount[i]);
+  for (i = 0; i < nLoops; i++) {
+    LDepth[i]  = 0;
+    LParent[i] = -1;
+    best = 1.0e30;
+    for (h = 0; h < nLoops; h++) {
+      if (h != i && LCount[i] >= 3 && LCount[h] >= 3 && abs(LArea[h]) > abs(LArea[i])) {
+        if (loopInside(i, h)) {
+          LDepth[i]++;
+          if (abs(LArea[h]) < best) {
+            best = abs(LArea[h]);
+            LParent[i] = h;
+          }
+        }
+      }
+    }
+  }
+
+  for (i = 0; i < nLoops; i++) {
+    if (LCount[i] >= 3 && LDepth[i] % 2 == 0) {
+      // outer boundary, counter-clockwise
+      nK = LCount[i];
+      for (k = 0; k < nK; k++) {
+        idx = ptIndex(i, 1, k);
+        KX[k] = PX[idx];
+        KY[k] = PY[idx];
+      }
+      // direct holes, clockwise
+      for (h = 0; h < nLoops; h++) {
+        if (LParent[h] == i && LDepth[h] % 2 == 1 && LCount[h] >= 3) {
+          nH = LCount[h];
+          for (k = 0; k < nH; k++) {
+            idx = ptIndex(h, 0, k);
+            HX[k] = PX[idx];
+            HY[k] = PY[idx];
+          }
+          // for each hole vertex, the nearest vertex of the current polygon
+          for (b = 0; b < nH; b++) {
+            CandD[b] = 1.0e30;
+            CandA[b] = 0;
+            Tried[b] = 0;
+            for (a = 0; a < nK; a++) {
+              dd = (KX[a] - HX[b]) * (KX[a] - HX[b]) + (KY[a] - HY[b]) * (KY[a] - HY[b]);
+              if (dd < CandD[b]) {
+                CandD[b] = dd;
+                CandA[b] = a;
+              }
+            }
+          }
+          // try candidates by increasing distance, accept the first bridge inside the copper
+          ia = -1;
+          ib = 0;
+          for (t = 0; t < nH && ia < 0; t++) {
+            bb = -1;
+            bd = 1.0e30;
+            for (b = 0; b < nH; b++) {
+              if (!Tried[b] && CandD[b] < bd) {
+                bd = CandD[b];
+                bb = b;
+              }
+            }
+            if (bb >= 0) {
+              Tried[bb] = 1;
+              if (bridgeOk(KX[CandA[bb]], KY[CandA[bb]], HX[bb], HY[bb], i)) {
+                ia = CandA[bb];
+                ib = bb;
+              }
+            }
+          }
+          if (ia < 0) {
+            // no clean bridge found: fall back to the closest pair
+            best = 1.0e30;
+            ia = 0;
+            ib = 0;
+            for (b = 0; b < nH; b++) {
+              if (CandD[b] < best) {
+                best = CandD[b];
+                ia = CandA[b];
+                ib = b;
+              }
+            }
+            nBadBridge++;
+          }
+          // polygon up to ia, whole hole starting and ending at ib, back to ia, rest
+          nT = 0;
+          for (k = 0; k <= ia; k++) {
+            TX[nT] = KX[k];
+            TY[nT] = KY[k];
+            nT++;
+          }
+          for (m = 0; m <= nH; m++) {
+            TX[nT] = HX[(ib + m) % nH];
+            TY[nT] = HY[(ib + m) % nH];
+            nT++;
+          }
+          TX[nT] = KX[ia];
+          TY[nT] = KY[ia];
+          nT++;
+          for (k = ia + 1; k < nK; k++) {
+            TX[nT] = KX[k];
+            TY[nT] = KY[k];
+            nT++;
+          }
+          for (k = 0; k < nT; k++) {
+            KX[k] = TX[k];
+            KY[k] = TY[k];
+          }
+          nK = nT;
+        }
+      }
+      // write the polygon
+      printf("LAYER %d;\nPOLYGON %.4f", lay, PolyEdge);
+      for (k = 0; k < nK; k++) {
+        if (k % 4 == 0) printf("\n ");
+        printf(" (%.4f %.4f)", KX[k], KY[k]);
+      }
+      printf(" (%.4f %.4f);\n", KX[0], KY[0]);
+      emitted++;
+    }
+  }
+  return emitted;
+}
+
+// ---------------------------------------------------------------- script generation
+
+// Writes one wire (no LAYER command) with the given width and curvature.
+void wireOut(real w, real x1, real y1, real x2, real y2, real cv) {
+  if (cv != 0.0)
+    printf("WIRE %.4f (%.4f %.4f) %+.4f (%.4f %.4f);\n", w, x1, y1, cv, x2, y2);
+  else
+    printf("WIRE %.4f (%.4f %.4f) (%.4f %.4f);\n", w, x1, y1, x2, y2);
+}
+
+void generate(void) {
+  nWires = 0;
+  nDup = 0;
+  nPoly = 0;
+  nPolyOutline = 0;
+  nBadBridge = 0;
+  int addW = 2 * mm2u(Margin);
+
+  board(B) {
+    output(OutFile, "wt") {
+      printf("GRID mm;\n");
+      B.signals(S) {
+        int k = sigIndex(S.name);
+        if (k >= 0 && SigSel[k]) {
+
+          // ---- wires
+          S.wires(SW) {
+            int lay = 0;
+            if (SW.layer == 1)  lay = 29;
+            if (SW.layer == 16) lay = 30;
+            if (lay) {
+              int nw = SW.width + addW;
+              if (stopWireExists(lay, SW.x1, SW.y1, SW.x2, SW.y2, nw, SW.curve)) {
+                nDup++;
+              }
+              else {
+                printf("LAYER %d;\n", lay);
+                wireOut(u2mm(nw), u2mm(SW.x1), u2mm(SW.y1),
+                        u2mm(SW.x2), u2mm(SW.y2), SW.curve);
+                nWires++;
+              }
+            }
+          }
+
+          // ---- polygons (pours)
+          if (IncPoly) {
+            S.polygons(P) {
+              int play = 0;
+              if (P.layer == 1)  play = 29;
+              if (P.layer == 16) play = 30;
+              if (play) {
+                int  byContour = 0;
+                real bw   = u2mm(P.width);
+                real clr  = u2mm(P.isolate);
+                real grow = PolyGrow;
+
+                // collect the loops of the poured copper (or of the outline as fallback)
+                resetLoops();
+                if (PolyPoured) {
+                  P.contours(CW) addContourWire(u2mm(CW.x1), u2mm(CW.y1),
+                                                u2mm(CW.x2), u2mm(CW.y2), CW.curve);
+                  if (inLoop) closeLoop();
+                }
+                if (nLoops > 0) byContour = 1;
+                else {
+                  resetLoops();
+                  P.wires(PWI) addContourWire(u2mm(PWI.x1), u2mm(PWI.y1),
+                                              u2mm(PWI.x2), u2mm(PWI.y2), PWI.curve);
+                  if (inLoop) closeLoop();
+                  if (PolyPoured) nPolyOutline++;
+                }
+
+                // automatic grow from the clearance of this pour
+                if (clr <= 0.0) clr = u2mm(S.class.clearance[S.class.number]);
+                if (clr <= 0.0) clr = 0.2;
+                if (AutoGrow) grow += AutoFactor * clr;
+                repClr  = clr;
+                repGrow = grow;
+
+                // hairline fill polygon, then the border as round wires: the contour is
+                // the centre line of the pour border, the copper extends by half the
+                // pour width beyond it
+                nPoly += emitLoops(play);
+                printf("LAYER %d;\n", play);
+                if (byContour) {
+                  P.contours(CW) wireOut(bw + 2.0 * grow, u2mm(CW.x1), u2mm(CW.y1),
+                                         u2mm(CW.x2), u2mm(CW.y2), CW.curve);
+                }
+                else {
+                  P.wires(PWI) wireOut(bw + 2.0 * grow, u2mm(PWI.x1), u2mm(PWI.y1),
+                                       u2mm(PWI.x2), u2mm(PWI.y2), PWI.curve);
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+// ---------------------------------------------------------------- main
+if (!board) {
+  dlgMessageBox("Run this ULP from the board editor.");
+  exit(EXIT_FAILURE);
+}
+
+collect();
+if (nSig == 0) {
+  dlgMessageBox("No signals with wires or polygons on Top/Bottom found.");
+  exit(EXIT_FAILURE);
+}
+
+board(B) OutFile = filedir(B.name) + "power_tracks_to_stop.scr";
+setupHelp();
+loadPage();
+updateStatus();
+
+int ok = dlgDialog("Power tracks to solder stop") {
+  dlgHBoxLayout {
+    dlgVBoxLayout {
+      dlgLabel("Signals routed on Top / Bottom copper:");
+      dlgGridLayout {
+        dlgCell(0, 0) dlgLabel("<b>Use</b>");
+        dlgCell(0, 1) dlgPushButton("Signal") onSort(0);
+        dlgCell(0, 2) dlgPushButton("Top")    onSort(1);
+        dlgCell(0, 3) dlgPushButton("Bottom") onSort(2);
+        dlgCell(0, 4) dlgPushButton("Poly")   onSort(5);
+        dlgCell(0, 5) dlgPushButton("Min w")  onSort(3);
+        dlgCell(0, 6) dlgPushButton("Max w")  onSort(4);
+        for (int r = 0; r < PageSize; r++) {
+          dlgCell(r + 1, 0) dlgCheckBox("", Slot[r]) onCheck();
+          dlgCell(r + 1, 1) dlgLabel(LName[r], 1);
+          dlgCell(r + 1, 2) dlgLabel(LTop[r], 1);
+          dlgCell(r + 1, 3) dlgLabel(LBot[r], 1);
+          dlgCell(r + 1, 4) dlgLabel(LPoly[r], 1);
+          dlgCell(r + 1, 5) dlgLabel(LMin[r], 1);
+          dlgCell(r + 1, 6) dlgLabel(LMax[r], 1);
+        }
+      }
+      dlgHBoxLayout {
+        dlgPushButton("Prev") {
+          commitPage();
+          if (Page > 0) Page--;
+          refresh();
+        }
+        dlgLabel(PageLbl, 1);
+        dlgPushButton("Next") {
+          commitPage();
+          if (Page < nPages() - 1) Page++;
+          refresh();
+        }
+        dlgStretch(1);
+        dlgLabel(SortLbl, 1);
+      }
+      dlgLabel(Status, 1);
+    }
+    dlgVBoxLayout {
+      dlgGroup("Selection") {
+        dlgHBoxLayout {
+          dlgPushButton("Select all") {
+            for (int i = 0; i < nSig; i++) SigSel[i] = 1;
+            refresh();
+          }
+          dlgPushButton("Clear all") {
+            for (int i = 0; i < nSig; i++) SigSel[i] = 0;
+            refresh();
+          }
+        }
+        dlgPushButton("Invert") {
+          commitPage();
+          for (int i = 0; i < nSig; i++) SigSel[i] = !SigSel[i];
+          refresh();
+        }
+        dlgHBoxLayout {
+          dlgLabel("Width >= (mm):");
+          dlgRealEdit(MinW, 0.0, 50.0);
+          dlgPushButton("Select") {
+            commitPage();
+            for (int i = 0; i < nSig; i++) if (SigMax[i] >= MinW) SigSel[i] = 1;
+            refresh();
+          }
+        }
+        dlgHBoxLayout {
+          dlgLabel("Name contains:");
+          dlgStringEdit(Filter);
+          dlgPushButton("Select") {
+            commitPage();
+            if (strlen(Filter) > 0) {
+              for (int i = 0; i < nSig; i++)
+                if (strstr(strupr(SigName[i]), strupr(Filter)) >= 0) SigSel[i] = 1;
+            }
+            refresh();
+          }
+        }
+      }
+      dlgGroup("Options") {
+        dlgHBoxLayout {
+          dlgLabel("Wire margin per side (mm):");
+          dlgRealEdit(Margin, 0.0, 2.0);
+        }
+        dlgCheckBox("Include polygons (pours)", IncPoly);
+        dlgCheckBox("Follow isolation cutouts (poured copper)", PolyPoured);
+        dlgCheckBox("Auto grow from clearance", AutoGrow);
+        dlgHBoxLayout {
+          dlgLabel("Auto grow (fraction of clearance):");
+          dlgRealEdit(AutoFactor, 0.0, 0.9);
+        }
+        dlgHBoxLayout {
+          dlgLabel("Extra grow per side (mm):");
+          dlgRealEdit(PolyGrow, 0.0, 1.0);
+        }
+        dlgHBoxLayout {
+          dlgLabel("Arc tolerance (mm):");
+          dlgRealEdit(ArcTol, 0.0005, 0.1);
+        }
+        dlgLabel("Script file:");
+        dlgStringEdit(OutFile);
+      }
+      dlgStretch(1);
+    }
+  }
+  dlgHBoxLayout {
+    dlgPushButton("Help") showHelp();
+    dlgStretch(1);
+    dlgPushButton("+Generate") {
+      commitPage();
+      if (countSelected() == 0) dlgMessageBox("Select at least one signal.");
+      else dlgAccept();
+    }
+    dlgPushButton("-Cancel") dlgReject();
+  }
+};
+if (!ok) exit(EXIT_SUCCESS);
+
+generate();
+
+string Msg;
+string Extra;
+sprintf(Msg, "Wires created: %d\nDuplicate wires skipped: %d\nPolygons created: %d",
+        nWires, nDup, nPoly);
+if (nPoly > 0) {
+  sprintf(Extra, "\nClearance used: %.3f mm, grow per side: %.3f mm", repClr, repGrow);
+  Msg = Msg + Extra;
+}
+if (nPolyOutline > 0) {
+  sprintf(Extra, "\n\nWARNING: %d polygon(s) not calculated, the outline was used.\nRun RATSNEST and generate again for the exact copper.", nPolyOutline);
+  Msg = Msg + Extra;
+}
+if (nBadBridge > 0) {
+  sprintf(Extra, "\n\nNote: %d hole(s) of a pour could not be joined cleanly; check the result.", nBadBridge);
+  Msg = Msg + Extra;
+}
+dlgMessageBox(Msg);
+
+if (nWires + nPoly == 0) exit(EXIT_SUCCESS);
+exit("SCRIPT '" + OutFile + "';");
