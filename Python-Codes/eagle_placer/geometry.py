@@ -18,11 +18,21 @@ class ViaData:
     signal_name: str
 
 @dataclass
+class TrackSegment:
+    """A routed copper segment extracted from an Eagle signal wire."""
+    p1: Tuple[float, float]
+    p2: Tuple[float, float]
+    width: float
+    layer: int
+    curve: float = 0.0
+    signal_name: str = ""
+
+@dataclass
 class NetConnection:
-    element: str  # Nome del componente (es. "R1")
-    pad: str      # Nome del pin/pad (es. "1", "A")
-    x: float      # Coordinata X assoluta (mm)
-    y: float      # Coordinata Y assoluta (mm)
+    element: str  # Component name (e.g. "R1")
+    pad: str      # Pin/pad name (e.g. "1", "A")
+    x: float      # Absolute X coordinate (mm)
+    y: float      # Absolute Y coordinate (mm)
 
 @dataclass
 class NetSignal:
@@ -43,9 +53,10 @@ class ComponentData:
     offset_x: float    
     offset_y: float    
     locked: bool = False
-    is_tht: bool = False  # True se ha solo pad passanti (THT)
+    is_tht: bool = False  # True when the package has only through-hole pads (THT)
+    is_smd: bool = False  # True only when the package has SMD pads and no through-hole pads
     
-    # Campi sincronizzati dallo schema (.SCH)
+    # Fields synchronized from the schematic (.SCH)
     value: str = ""
     deviceset: str = ""
     swap_enabled: bool = True
@@ -53,26 +64,38 @@ class ComponentData:
     pad_to_pin_map: Dict[str, str] = field(default_factory=dict)         # "Pad" -> "Gate.Pin"
     gate_pin_definitions: Dict[str, Dict[str, Any]] = field(default_factory=dict)
     gates: Dict[str, Any] = field(default_factory=dict)
+    package_outlines: List[List[Tuple[float, float]]] = field(default_factory=list)
 
 @dataclass
 class BoardData:
+    # Board outline and cutout polygons only; component/package geometry is stored separately.
     boundary_polygons: List[List[Tuple[float, float]]] = field(default_factory=list)
+    component_outlines: Dict[str, List[List[Tuple[float, float]]]] = field(default_factory=dict)
+    packages: Dict[str, Dict[str, Any]] = field(default_factory=dict)
     keepouts_top: List[List[Tuple[float, float]]] = field(default_factory=list)
     keepouts_bottom: List[List[Tuple[float, float]]] = field(default_factory=list)
+    restrict_top: List[List[Tuple[float, float]]] = field(default_factory=list)
+    restrict_bottom: List[List[Tuple[float, float]]] = field(default_factory=list)
+    grid_spacing_mm: Optional[float] = None
+    display_unit: str = "mm"
     holes: List[Tuple[float, float, float]] = field(default_factory=list)
     isolated_vias: List[ViaData] = field(default_factory=list)
+    tracks: List[TrackSegment] = field(default_factory=list)
     components: Dict[str, ComponentData] = field(default_factory=dict)
     signals: Dict[str, NetSignal] = field(default_factory=dict)
     net_classes: Dict[int, Any] = field(default_factory=dict)
     passive_equivalence_groups: Dict[str, List[str]] = field(default_factory=dict)
     design_rules: Optional[Any] = None
+    # Board-only objects are fixed obstacles when a usable schematic is available.
+    orphan_components: set = field(default_factory=set)
+    schematic_only_components: set = field(default_factory=set)
 
     def merge_schematic_data(self, schematic_parts: Dict[str, Any]):
-        """Sincronizza i dati estratti dal file .SCH nei componenti della scheda."""
+        """Merge data extracted from the .SCH file into board components."""
         for comp_name, comp in self.components.items():
             if comp_name in schematic_parts:
                 part = schematic_parts[comp_name]
-                comp.value = getattr(part, 'value', '')  # Prende il valore (es. 10k, 100nF)
+                comp.value = getattr(part, 'value', '')  # Copy the value (e.g. 10k, 100nF)
                 comp.pin_to_pad_map = getattr(part, 'pin_to_pad_map', {})
                 comp.pad_to_pin_map = getattr(part, 'pad_to_pin_map', {})
                 comp.gate_pin_definitions = getattr(part, 'gate_pin_definitions', {})
@@ -80,23 +103,23 @@ class BoardData:
                 comp.deviceset = getattr(part, 'deviceset', "")
 
     def build_passive_equivalence_groups(self):
-        """Identifica i componenti passivi (R, C, L) identici per libreria, package e valore."""
+        """Identify identical passive components (R, C, L) by library, package, and value."""
         temp_groups = {}
         
         for name, comp in self.components.items():
             if comp.locked:
-                continue  # Ignora i componenti bloccati
+                continue  # Skip locked components
             
-            # Identifica i passivi dal prefisso del nome (R, C, L)
+            # Identify passives from their name prefix (R, C, L)
             prefix = "".join([c for c in name if c.isalpha()]).upper()
             if prefix not in ["R", "C", "L"] or not comp.value:
                 continue
 
-            # Chiave univoca: libreria + footprint + valore
+            # Unique key: library + footprint + value
             key = (comp.library.lower(), comp.package.lower(), comp.value.strip().lower())
             temp_groups.setdefault(key, []).append(name)
 
-        # Filtra solo i gruppi con almeno 2 componenti interscambiabili
+        # Keep only groups with at least two interchangeable components
         self.passive_equivalence_groups = {}
         idx = 1
         for (lib, pkg, val), members in temp_groups.items():
@@ -107,7 +130,7 @@ class BoardData:
 
 def prefix_type(name: str) -> str:
     p = "".join([c for c in name if c.isalpha()]).upper()
-    return "Resistenze" if p == "R" else ("Condensatori" if p == "C" else "Induttori")
+    return "Resistors" if p == "R" else ("Capacitors" if p == "C" else "Inductors")
 
 def interpolate_arc(x1: float, y1: float, x2: float, y2: float, curve_deg: float) -> List[Tuple[float, float]]:
     if abs(curve_deg) < 0.01:

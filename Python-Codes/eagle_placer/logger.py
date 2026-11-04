@@ -3,7 +3,7 @@ import sys
 from datetime import datetime
 
 class GUILogger:
-    """Logger personalizzato che reindirizza l'output alla GUI"""
+    """Custom logger that forwards output to the GUI."""
     
     def __init__(self, gui_callback=None):
         self.gui_callback = gui_callback
@@ -11,71 +11,71 @@ class GUILogger:
         self.original_stderr = sys.stderr
     
     def set_gui_callback(self, callback):
-        """Imposta il callback della GUI per i messaggi di log"""
+        """Set the GUI callback for log messages."""
         self.gui_callback = callback
     
     def info(self, message: str):
-        """Log di livello INFO"""
+        """Write an INFO-level log message."""
         self._log(message, "INFO")
     
     def warning(self, message: str):
-        """Log di livello WARNING"""
+        """Write a WARNING-level log message."""
         self._log(message, "WARNING")
     
     def error(self, message: str):
-        """Log di livello ERROR"""
+        """Write an ERROR-level log message."""
         self._log(message, "ERROR")
     
     def debug(self, message: str):
-        """Log di livello DEBUG"""
+        """Write a DEBUG-level log message."""
         self._log(message, "DEBUG")
     
     def success(self, message: str):
-        """Log di livello SUCCESS"""
+        """Write a SUCCESS-level log message."""
         self._log(message, "SUCCESS")
     
     def _log(self, message: str, level: str):
-        """Metodo interno per il logging"""
+        """Internal logging method."""
         timestamp = datetime.now().strftime("%H:%M:%S")
         formatted_message = f"[{timestamp}] {level}: {message}"
         
-        # Invia alla GUI se disponibile
+        # Send to the GUI when available
         if self.gui_callback:
             try:
                 self.gui_callback(message, level)
             except Exception as e:
-                # Fallback su stdout se la GUI fallisce
+                # Fall back to stdout if the GUI callback fails
                 print(formatted_message, file=self.original_stdout)
         else:
-            # Fallback su stdout se non c'è GUI
+            # Fall back to stdout when no GUI is available
             print(formatted_message, file=self.original_stdout)
     
     def redirect_stdout(self):
-        """Reindirizza stdout e stderr a questo logger"""
+        """Redirect stdout and stderr to this logger."""
         sys.stdout = self
         sys.stderr = self
     
     def restore_stdout(self):
-        """Ripristina stdout e stderr originali"""
+        """Restore the original stdout and stderr streams."""
         sys.stdout = self.original_stdout
         sys.stderr = self.original_stderr
     
     def write(self, text):
-        """Metodo per compatibilità con sys.stdout"""
-        if text.strip():  # Ignora stringhe vuote (es. newline)
+        """Provide compatibility with sys.stdout."""
+        if text.strip():  # Ignore empty strings (e.g. newline characters)
             self.info(text.strip())
     
     def flush(self):
-        """Metodo per compatibilità con sys.stdout"""
+        """Provide compatibility with sys.stdout."""
         pass
 
 # Logger globale
 global_logger = GUILogger()
 
 def get_logger():
-    """Restituisce il logger globale"""
+    """Return the global logger."""
     return global_logger
 
 def set_gui_logger_callback(callback):
-    """Imposta il callback GUI per il logger globale"""
+    """Set the GUI callback for the global logger."""
     global_logger.set_gui_callback(callback)

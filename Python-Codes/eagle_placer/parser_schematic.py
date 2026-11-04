@@ -2,6 +2,7 @@ import xml.etree.ElementTree as ET
 import os
 from dataclasses import dataclass, field
 from typing import List, Dict, Tuple, Set, Optional
+from dru_parser import DesignRules
 
 @dataclass
 class NetClassData:
@@ -35,32 +36,33 @@ class PartData:
     pin_to_pad_map: Dict[str, str] = field(default_factory=dict) # "Gate.Pin" -> "Pad"
     pad_to_pin_map: Dict[str, str] = field(default_factory=dict) # "Pad" -> "Gate.Pin"
     gate_pin_definitions: Dict[str, Dict[str, PinData]] = field(default_factory=dict)
+    net_by_pin: Dict[str, str] = field(default_factory=dict)
 
 class EagleSchematicParser:
     def __init__(self, sch_path: str):
         if not os.path.exists(sch_path):
-            raise FileNotFoundError(f"File schema non trovato: {sch_path}")
+            raise FileNotFoundError(f"Schematic file not found: {sch_path}")
         self.root = ET.parse(sch_path).getroot()
         self.parts: Dict[str, PartData] = {}
         self.net_classes: Dict[int, NetClassData] = {}
 
     def _find_lib_data(self, library: str, deviceset: str, device: str, lib_cache: dict) -> Optional[dict]:
-        """Cerca i dati di libreria con tolleranza su None/Stringa vuota e Case Insensitivity."""
+        """Find library data while tolerating None, empty strings, and case differences."""
         lib_l = (library or "").lower()
         dset_l = (deviceset or "").lower()
         dev_l = (device or "").lower()
 
-        # 1. Matching esatto (Case-Insensitive)
+        # 1. Exact match (case-insensitive)
         for (c_lib, c_dset, c_dev), data in lib_cache.items():
             if c_lib.lower() == lib_l and c_dset.lower() == dset_l and c_dev.lower() == dev_l:
                 return data
 
-        # 2. Fallback: match su device vuoto ""
+        # 2. Fallback: match an empty device name
         for (c_lib, c_dset, c_dev), data in lib_cache.items():
             if c_lib.lower() == lib_l and c_dset.lower() == dset_l and c_dev == "":
                 return data
 
-        # 3. Fallback: se c'è un solo dispositivo per quel deviceset
+        # 3. Fallback: use the only device available for this device set
         matches = [data for (c_lib, c_dset, c_dev), data in lib_cache.items() 
                    if c_lib.lower() == lib_l and c_dset.lower() == dset_l]
         if len(matches) == 1:
@@ -75,13 +77,15 @@ class EagleSchematicParser:
             for cl in classes_node.findall("class"):
                 num = int(cl.get("number", 0))
                 name = cl.get("name", "default")
-                width = float(cl.get("width", 0.0))
-                clearance = float(cl.get("clearance", 0.0))
+                width = DesignRules._parse_unit(cl.get("width", "0"))
+                clearance = DesignRules._parse_unit(cl.get("clearance", "0"))
+                if width is None or clearance is None:
+                    continue
                 self.net_classes[num] = NetClassData(
                     number=num, name=name, width=width, clearance=clearance
                 )
 
-        # 1. Estrazione Parti (con gestione sicura di device vuoto)
+        # 1. Extract parts (safely handle empty device names)
         parts_node = self.root.find(".//schematic/parts")
         if parts_node is not None:
             for part_elm in parts_node.findall("part"):
@@ -89,14 +93,14 @@ class EagleSchematicParser:
                 self.parts[name] = PartData(
                     name=name,
                     deviceset=part_elm.get("deviceset", ""),
-                    device=part_elm.get("device") or "", # Previene None
+                    device=part_elm.get("device") or "", # Prevent None values
                     library=part_elm.get("library", ""),
                     value=part_elm.get("value", "")
                 )
 
         lib_cache = {}
 
-        # 2. Parsing Librerie dello Schema
+        # 2. Parse schematic libraries
         for lib in self.root.findall(".//schematic/libraries/library"):
             lib_name = lib.get("name", "")
             
@@ -146,7 +150,7 @@ class EagleSchematicParser:
                         "connects": connects
                     }
 
-        # 3. Associazione Dati con Fallback Intelligente
+        # 3. Associate data using intelligent fallbacks
         for part in self.parts.values():
             data = self._find_lib_data(part.library, part.deviceset, part.device, lib_cache)
             if data:
@@ -158,13 +162,28 @@ class EagleSchematicParser:
                     pad_str = conn["pad"]
                     full_pin = f"{g}.{p}" if g else p
                     
-                    # Gestione pad multipli (es: pad="1 2" o "P1,P2")
+                    # Handle multiple pads (e.g. pad="1 2" or "P1,P2")
                     pads = pad_str.replace(",", " ").split()
                     for pad in pads:
                         part.pin_to_pad_map[full_pin] = pad
                         part.pad_to_pin_map[pad] = full_pin
 
-        # 4. Estrazione Istanze Grafiche e SwapLevel Gate
+        # 4. Extract schematic net membership for board/schematic consistency checks.
+        sheets_node = self.root.find(".//schematic/sheets")
+        if sheets_node is not None:
+            for sheet in sheets_node.findall("sheet"):
+                for net in sheet.findall(".//nets/net"):
+                    net_name = net.get("name", "")
+                    for pinref in net.findall(".//pinref"):
+                        part_name = pinref.get("part", "")
+                        gate_name = pinref.get("gate", "")
+                        pin_name = pinref.get("pin", "")
+                        part = self.parts.get(part_name)
+                        if part is not None and pin_name:
+                            full_pin = f"{gate_name}.{pin_name}" if gate_name else pin_name
+                            part.net_by_pin[full_pin] = net_name
+
+        # 5. Extract graphical instances and gate swap levels.
         sheets_node = self.root.find(".//schematic/sheets")
         if sheets_node is not None:
             for idx, sheet in enumerate(sheets_node.findall("sheet")):
